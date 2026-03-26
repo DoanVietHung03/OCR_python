@@ -243,12 +243,19 @@ def view_history():
             .btn-back:hover { background: #00ff88; color: #000; }
             table { width: 100%; border-collapse: collapse; background: #111; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
             th, td { border: 1px solid #222; padding: 15px; text-align: center; }
-            th { background: #1a1a1a; color: #00ff88; text-transform: uppercase; letter-spacing: 1px; }
+            th { background: #1a1a1a; color: #00ff88; text-transform: uppercase; letter-spacing: 1px; font-size: 0.9rem;}
             .col-time { color: #888; font-family: monospace; font-size: 1.1rem; }
             .col-plate { font-size: 1.5rem; font-weight: bold; color: #ffff00; text-shadow: 0 0 5px rgba(255,255,0,0.3); }
             .col-id { color: #00e5ff; font-weight: bold; }
-            .img-container img { max-width: 250px; border: 1px solid #333; border-radius: 4px; transition: transform 0.2s; }
-            .img-container img:hover { transform: scale(2.5); z-index: 100; position: relative; border-color: #00ff88; }
+            
+            .img-container img { border-radius: 4px; transition: transform 0.2s; }
+            /* Ảnh xe toàn cảnh (viền xám) */
+            .img-veh { max-width: 200px; border: 1px solid #333; }
+            .img-veh:hover { transform: scale(2.5); z-index: 100; position: relative; border-color: #00ff88; }
+            /* Ảnh crop biển số (viền xanh neon) */
+            .img-pla { max-width: 150px; border: 2px solid #00e5ff; }
+            .img-pla:hover { transform: scale(3.5); z-index: 100; position: relative; box-shadow: 0 0 15px #00e5ff;}
+            
             tr:hover { background: #181818; }
         </style>
     </head>
@@ -259,16 +266,33 @@ def view_history():
         </div>
         <table>
             <thead>
-                <tr><th>Thời gian ghi nhận</th><th>ID Tracker</th><th>Biển số nhận diện</th><th>Độ tin cậy</th><th>Hình ảnh đối soát</th></tr>
+                <tr>
+                    <th>Thời gian</th>
+                    <th>ID Tracker</th>
+                    <th>Biển số</th>
+                    <th>Độ tin cậy</th>
+                    <th>Ảnh Toàn Cảnh (Xe)</th>
+                    <th>Ảnh Cận Cảnh (Biển số)</th>
+                </tr>
             </thead>
             <tbody>
                 {% for e in events %}
                 <tr>
-                    <td class="col-time">{{ e['Thời gian'] }}</td>
-                    <td class="col-id">#{{ e['ID_Xe'] }}</td>
-                    <td class="col-plate">{{ e['Biển_số'] }}</td>
-                    <td><span style="color: {% if e['Độ_tự_tin']|float > 0.8 %}#00ff00{% else %}#ffaa00{% endif %};">{{ (e['Độ_tự_tin']|float * 100)|int }}%</span></td>
-                    <td class="img-container"><img src="/images/{{ e['File_ảnh'] }}" alt="Plate Crop"></td>
+                    <td class="col-time">{{ e.get('Thời gian', '') }}</td>
+                    <td class="col-id">#{{ e.get('ID_Xe', '') }}</td>
+                    <td class="col-plate">{{ e.get('Biển_số', '') }}</td>
+                    <td><span style="color: {% if e.get('Độ_tự_tin', '0')|float > 0.8 %}#00ff00{% else %}#ffaa00{% endif %};">{{ (e.get('Độ_tự_tin', '0')|float * 100)|int }}%</span></td>
+                    
+                    <td class="img-container">
+                        <img src="/images/{{ e.get('Ảnh_Xe', '') }}" alt="Vehicle" class="img-veh">
+                    </td>
+                    <td class="img-container">
+                        {% if e.get('Ảnh_Biển') %}
+                        <img src="/images/{{ e.get('Ảnh_Biển', '') }}" alt="Plate" class="img-pla">
+                        {% else %}
+                        <span style="color: #444; font-size: 0.8rem;">(Không có ảnh)</span>
+                        {% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

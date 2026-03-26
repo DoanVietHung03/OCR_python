@@ -7,13 +7,11 @@ import csv
 import time
 from datetime import datetime
 
-# Import các class cấu trúc dữ liệu và tiện ích
 from config import OCRResult
 from utils import (enhance_plate_quality, preprocess_and_normalize_ocr, 
                    clean_plate_text, clean_top_line, clean_bottom_line)
 from inference import infer_yolo, decode_parseq
 
-# --- CẤU HÌNH LƯU TRỮ EVENT ---
 LOG_DIR = "event_logs"
 IMG_DIR = os.path.join(LOG_DIR, "images")
 CSV_FILE = os.path.join(LOG_DIR, "history.csv")
@@ -22,7 +20,8 @@ os.makedirs(IMG_DIR, exist_ok=True)
 if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Thời gian", "ID_Xe", "Biển_số", "Độ_tự_tin", "File_ảnh"])
+        # Thêm cột Ảnh_Biển vào file CSV
+        writer.writerow(["Thời gian", "ID_Xe", "Biển_số", "Độ_tự_tin", "Ảnh_Xe", "Ảnh_Biển"])
 
 def process_single_frame(img_bgr,
                          vehicle_session, plate_session, parseq_session,
@@ -32,7 +31,6 @@ def process_single_frame(img_bgr,
                          allowed_vehicle_ids,
                          tracker, ocr_cache):
     
-    # 1. Phát hiện phương tiện
     vehicle_dets = infer_yolo(vehicle_session, vehicle_in, vehicle_out, img_bgr, 0.4, allowed_vehicle_ids)
 
     if len(vehicle_dets) > 0:
@@ -43,7 +41,6 @@ def process_single_frame(img_bgr,
     else:
         detections = sv.Detections.empty()
 
-    # 2. Cập nhật Tracker
     tracked_detections = tracker.update_with_detections(detections)
     active_track_ids = set()
     draw_list = []
@@ -60,12 +57,10 @@ def process_single_frame(img_bgr,
 
         if w < 60 or h < 60: continue
 
-        # --- LOGIC NHẬN DIỆN ---
         final_text = ""
         needs_ocr = True
 
         if track_id in ocr_cache:
-            # Chỉ coi là xong nếu độ tin cậy > 80% (để ko tốn tài nguyên chạy lại)
             if ocr_cache[track_id].confidence >= 0.80 and ocr_cache[track_id].update_count >= 5:
                 needs_ocr = False
                 final_text = ocr_cache[track_id].text
@@ -77,6 +72,7 @@ def process_single_frame(img_bgr,
             
             plates = infer_yolo(plate_session, plate_in, plate_out, vehicle_roi, 0.4)
             best_plate_conf = 0.0
+            best_plate_img = None # Biến lưu tạm ảnh crop biển số tốt nhất
 
             for p_det in plates:
                 p_x, p_y, p_w, p_h = p_det.box
@@ -112,41 +108,54 @@ def process_single_frame(img_bgr,
                 if current_conf > best_plate_conf:
                     best_plate_conf = current_conf
                     final_text = current_text
+                    # Copy ảnh biển số gốc vào biến tạm
+                    best_plate_img = img_plate_raw.copy()
 
-            # Cập nhật Cache
             if final_text:
                 if track_id not in ocr_cache:
                     ocr_cache[track_id] = OCRResult(final_text, best_plate_conf, 1)
+                    ocr_cache[track_id].plate_crop = best_plate_img # Gắn ảnh biển vào bộ nhớ
                 elif best_plate_conf > ocr_cache[track_id].confidence:
                     ocr_cache[track_id].text = final_text
                     ocr_cache[track_id].confidence = best_plate_conf
                     ocr_cache[track_id].update_count += 1
+                    ocr_cache[track_id].plate_crop = best_plate_img # Cập nhật ảnh biển nét hơn
 
-        # --- LƯU LOG & CHUẨN BỊ VẼ (CHỈ KHI CONF >= 0.8) ---
         display_text = ""
         if track_id in ocr_cache:
             res = ocr_cache[track_id]
-            # Chỉ hiển thị và lưu nếu đạt ngưỡng 80%
             if res.confidence >= 0.80:
                 display_text = res.text
                 
-                # Lưu log duy nhất 1 lần cho mỗi ID khi đạt ngưỡng
                 if not res.is_logged:
                     vehicle_crop = img_bgr[y:y+h, x:x+w]
+                    # Lấy ảnh biển số từ bộ nhớ ra
+                    plate_crop = getattr(res, 'plate_crop', None) 
+                    
                     if vehicle_crop.size > 0:
                         now = datetime.now()
                         t_str, f_ts = now.strftime("%H:%M:%S %d/%m/%Y"), now.strftime("%H%M%S")
-                        f_name = f"{res.text}_ID{track_id}_{f_ts}.jpg"
-                        cv2.imwrite(os.path.join(IMG_DIR, f_name), vehicle_crop)
+                        
+                        # Tạo 2 tên file tách biệt
+                        veh_name = f"VEH_{res.text}_ID{track_id}_{f_ts}.jpg"
+                        pla_name = f"PLA_{res.text}_ID{track_id}_{f_ts}.jpg"
+                        
+                        cv2.imwrite(os.path.join(IMG_DIR, veh_name), vehicle_crop)
+                        
+                        # Chỉ lưu nếu cắt được ảnh biển số
+                        if plate_crop is not None and plate_crop.size > 0:
+                            cv2.imwrite(os.path.join(IMG_DIR, pla_name), plate_crop)
+                        else:
+                            pla_name = "" # Để trống nếu ko có
+                            
                         with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
                             writer = csv.writer(f)
-                            writer.writerow([t_str, track_id, res.text, f"{res.confidence:.2f}", f_name])
+                            # Ghi cả 2 tên file vào dòng mới
+                            writer.writerow([t_str, track_id, res.text, f"{res.confidence:.2f}", veh_name, pla_name])
                         res.is_logged = True
 
-        # Gom danh sách vẽ: nếu display_text rỗng (do < 80%), nó sẽ chỉ hiện ID
         draw_list.append(((x, y, w, h), track_id, display_text))
 
-    # --- VẼ HIỂN THỊ ---
     for box, tid, txt in draw_list:
         dx, dy, dw, dh = box
         cv2.rectangle(img_bgr, (dx, dy), (dx + dw, dy + dh), (0, 255, 0), 2)
@@ -154,6 +163,5 @@ def process_single_frame(img_bgr,
         cv2.putText(img_bgr, label, (dx, dy-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(img_bgr, label, (dx, dy-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
 
-    # Dọn dẹp cache
     stale_ids = [tid for tid in ocr_cache.keys() if tid not in active_track_ids]
     for tid in stale_ids: del ocr_cache[tid]

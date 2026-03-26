@@ -2,6 +2,11 @@
 CHARSET = r"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"
 TARGET_VEHICLES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
+# Trọng số điểm cho từng thành phần trong việc đánh giá chất lượng biển số
+WEIGHT_VEHICLE = 0.20
+WEIGHT_PLATE = 0.30
+WEIGHT_OCR = 0.50
+
 class OCRResult:
     def __init__(self, text, confidence, update_count):
         self.text = text

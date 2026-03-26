@@ -7,7 +7,7 @@ import csv
 import time
 from datetime import datetime
 
-from config import OCRResult
+from config import OCRResult, WEIGHT_VEHICLE, WEIGHT_PLATE, WEIGHT_OCR
 from utils import (enhance_plate_quality, preprocess_and_normalize_ocr, 
                    clean_plate_text, clean_top_line, clean_bottom_line)
 from inference import infer_yolo, decode_parseq
@@ -65,6 +65,8 @@ def process_single_frame(img_bgr,
                 needs_ocr = False
                 final_text = ocr_cache[track_id].text
 
+        vehicle_conf = tracked_detections.confidence[i] if tracked_detections.confidence is not None else 0.0
+        
         if needs_ocr:
             roi_x1, roi_y1 = max(0, int(x - w * 0.05)), max(0, int(y - h * 0.05))
             roi_x2, roi_y2 = min(img_bgr.shape[1], int(x + w * 1.05)), min(img_bgr.shape[0], int(y + h * 1.05))
@@ -76,6 +78,8 @@ def process_single_frame(img_bgr,
 
             for p_det in plates:
                 p_x, p_y, p_w, p_h = p_det.box
+                plate_conf = p_det.score
+                
                 abs_x, abs_y = p_x + roi_x1, p_y + roi_y1
                 if abs_y > img_bgr.shape[0] * 0.9: continue
 
@@ -87,26 +91,31 @@ def process_single_frame(img_bgr,
                     img_plate = cv2.rotate(img_plate, cv2.ROTATE_90_CLOCKWISE)
 
                 ratio = img_plate.shape[1] / img_plate.shape[0]
-                current_text, current_conf = "", 0.0
+                current_text, ocr_conf = "", 0.0
 
                 if ratio > 2.2:
                     blob = preprocess_and_normalize_ocr(img_plate)
                     logits = parseq_session.run(parseq_out, {parseq_in[0]: blob})[0][0]
-                    current_text, current_conf = decode_parseq(logits, logits.shape[0], logits.shape[1])
+                    current_text, ocr_conf = decode_parseq(logits, logits.shape[0], logits.shape[1])
                     current_text = clean_plate_text(current_text)
                 else:
                     h_p, w_p = img_plate.shape[:2]
-                    img_top, img_bot = img_plate[0:int(h_p*0.55), :], img_plate[int(h_p*0.45):, :]
+                    img_top, img_bot = img_plate[0:int(h_p*0.60), :], img_plate[int(h_p*0.40):, :]
+                    
                     b_top, b_bot = preprocess_and_normalize_ocr(img_top), preprocess_and_normalize_ocr(img_bot)
                     l_top = parseq_session.run(parseq_out, {parseq_in[0]: b_top})[0][0]
                     l_bot = parseq_session.run(parseq_out, {parseq_in[0]: b_bot})[0][0]
+                    
                     t_top, c_top = decode_parseq(l_top, l_top.shape[0], l_top.shape[1])
                     t_bot, c_bot = decode_parseq(l_bot, l_bot.shape[0], l_bot.shape[1])
-                    current_text = f"{clean_top_line(t_top)}-{clean_bottom_line(t_bot)}".strip('-')
-                    current_conf = (c_top + c_bot) / 2.0
+                    
+                    current_text = f"{clean_top_line(t_top)} {clean_bottom_line(t_bot)}".strip()
+                    ocr_conf = (c_top + c_bot) / 2.0
 
-                if current_conf > best_plate_conf:
-                    best_plate_conf = current_conf
+                holistic_score = (vehicle_conf * WEIGHT_VEHICLE) + (plate_conf * WEIGHT_PLATE) + (ocr_conf * WEIGHT_OCR)
+                
+                if holistic_score > best_plate_conf:
+                    best_plate_conf = holistic_score
                     final_text = current_text
                     # Copy ảnh biển số gốc vào biến tạm
                     best_plate_img = img_plate_raw.copy()

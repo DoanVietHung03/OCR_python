@@ -6,12 +6,16 @@ def clean_plate_text(input_str):
     return "".join([c.upper() for c in input_str if c.isalnum()])
 
 def clean_bottom_line(input_str):
-    output = "".join([c for c in input_str if c.isdigit()])
-    return output[:5] if len(output) > 5 else output
+    output = "".join([c for c in input_str if c.isdigit()])[:5]
+    if len(output) == 5:
+        return f"{output[:3]}.{output[3:]}"
+    return output
 
 def clean_top_line(input_str):
-    output = clean_plate_text(input_str)
-    return output[:5] if len(output) > 5 else output
+    output = clean_plate_text(input_str)[:4]  # Giữ tối đa 4 ký tự đầu tiên của dòng trên
+    if len(output) >= 3:
+        return f"{output[:2]}-{output[2:]}"
+    return output
 
 def preprocess_and_normalize_ocr(src, target_w=128, target_h=32):
     if src is None or src.size == 0:
@@ -25,24 +29,28 @@ def enhance_plate_quality(src):
     if src is None or src.size == 0:
         return src
     
-    dst = cv2.resize(src, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LANCZOS4)
+    # 1. Phóng to vừa phải (1.5x thay vì 2.0x) bằng INTER_CUBIC để nét chữ mềm hơn
+    dst = cv2.resize(src, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+    
+    # 2. Lọc nhiễu (Bilateral Filter) TRƯỚC khi tăng tương phản
+    # Giúp xóa bỏ các hạt sạn, gai góc gây nhầm lẫn cho OCR nhưng giữ lại viền cạnh
+    dst = cv2.bilateralFilter(dst, d=7, sigmaColor=30, sigmaSpace=30)
+
     lab = cv2.cvtColor(dst, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     avg_brightness = np.mean(l)
 
+    # 3. Tăng cường độ sáng/tối (CLAHE)
     if avg_brightness < 70:
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 4)) 
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 4)) 
     elif avg_brightness > 200:
-        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 4))
+        clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 4))
     else:
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 4))
+        clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 4))
 
     l_eq = clahe.apply(l)
-
-    if avg_brightness < 70:
-        l_eq = cv2.bilateralFilter(l_eq, d=5, sigmaColor=15, sigmaSpace=15)
-
     lab_eq = cv2.merge((l_eq, a, b))
+    
     return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
 
 def letterbox_yolo(source, expected_width, expected_height):

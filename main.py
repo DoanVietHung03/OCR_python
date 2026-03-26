@@ -106,7 +106,7 @@ def camera_worker(cam_id, video_path, shared_dict, stop_event):
         if not skip_ai:
             process_single_frame(frame, vehicle_session, plate_session, parseq_session, 
                                 vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out, 
-                                allowed_vehicle_ids, tracker, ocr_cache)
+                                allowed_vehicle_ids, tracker, ocr_cache, frame_id=frame_count)
             if len(tracker.tracked_tracks) == 0:
                 empty_frame_counter += 1
             else:
@@ -126,22 +126,25 @@ def camera_worker(cam_id, video_path, shared_dict, stop_event):
 
         dash = cv2.resize(frame, (0, 0), fx=SCALE_RATIO, fy=SCALE_RATIO)
         
-        # Thả ảnh đã xử lý vào Shared Memory
-        shared_dict[cam_id] = dash
+        ret_encode, buffer = cv2.imencode('.jpg', dash, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+        if ret_encode:
+            shared_dict[cam_id] = buffer.tobytes()
         
-        # Với A4000, xử lý 1 frame quá nhanh. Cần chèn sleep để web không bị ngộp dữ liệu.
         elapsed = time.time() - start_time
         if elapsed < frame_delay:
             time.sleep(frame_delay - elapsed)
 
     cap.release()
-    print(f"[INFO] Đã đóng Camera {cam_id}")
 
 def generate_frames(shared_dict):
     """Luồng gộp ảnh (Aggregator) chỉ có nhiệm vụ đọc từ Shared Memory"""
     while True:
-        frame1 = shared_dict.get('K1')
-        frame2 = shared_dict.get('K5')
+        buf1 = shared_dict.get('K1')
+        buf2 = shared_dict.get('K5')
+        
+        # BÍ QUYẾT TĂNG TỐC 2: Giải mã Byte ngược lại thành ảnh
+        frame1 = cv2.imdecode(np.frombuffer(buf1, np.uint8), cv2.IMREAD_COLOR) if buf1 is not None else None
+        frame2 = cv2.imdecode(np.frombuffer(buf2, np.uint8), cv2.IMREAD_COLOR) if buf2 is not None else None
         
         combined = None
         if frame1 is not None and frame2 is not None:
@@ -153,11 +156,11 @@ def generate_frames(shared_dict):
         elif frame2 is not None: combined = frame2
         
         if combined is not None:
-            ret, buffer = cv2.imencode('.jpg', combined, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            ret, final_buffer = cv2.imencode('.jpg', combined, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
             if ret:
-                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + final_buffer.tobytes() + b'\r\n')
         
-        time.sleep(0.033) # Web stream duy trì ở mức ~30fps
+        time.sleep(0.033)  # Giới hạn tốc độ gộp ảnh ở khoảng 30 FPS
 
 # --- Các Route của Flask ---
 @app.route('/')

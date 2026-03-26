@@ -30,7 +30,7 @@ def process_single_frame(img_bgr,
                          plate_in, plate_out,
                          parseq_in, parseq_out,
                          allowed_vehicle_ids,
-                         tracker, ocr_cache):
+                         tracker, ocr_cache, frame_id=0):
     
     vehicle_dets = infer_yolo(vehicle_session, vehicle_in, vehicle_out, img_bgr, 0.4, allowed_vehicle_ids)
 
@@ -68,7 +68,7 @@ def process_single_frame(img_bgr,
 
         vehicle_conf = tracked_detections.confidence[i] if tracked_detections.confidence is not None else 0.0
         
-        if needs_ocr:
+        if needs_ocr and (frame_id % 3 == 0):
             roi_x1, roi_y1 = max(0, int(x - w * 0.05)), max(0, int(y - h * 0.05))
             roi_x2, roi_y2 = min(img_bgr.shape[1], int(x + w * 1.05)), min(img_bgr.shape[0], int(y + h * 1.05))
             vehicle_roi = img_bgr[roi_y1:roi_y2, roi_x1:roi_x2]

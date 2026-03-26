@@ -110,8 +110,7 @@ def video_processing_worker(stop_event, vehicle_session, plate_session, parseq_s
     cache_cam1, cache_cam2 = {}, {}
     executor = ThreadPoolExecutor(max_workers=2)
     SCALE_RATIO = 0.6 
-    
-    # --- THUẬT TOÁN ĐẾM FPS MỚI (Cực kỳ ổn định) ---
+
     fps_timer = time.time()
     cam1_frame_count = 0
     cam2_frame_count = 0
@@ -200,7 +199,12 @@ def load_models():
     sess_options.intra_op_num_threads = max(2, int(multiprocessing.cpu_count() * 0.75))
 
     providers = [
-        ('CUDAExecutionProvider', {'device_id': 0, 'cudnn_conv_algo_search': 'EXHAUSTIVE', 'arena_extend_strategy': 'kNextPowerOfTwo', 'do_copy_in_default_stream': True}),
+        ('CUDAExecutionProvider', {
+            'device_id': 0, 
+            'cudnn_conv_algo_search': 'EXHAUSTIVE', 
+            'arena_extend_strategy': 'kNextPowerOfTwo', 
+            'do_copy_in_default_stream': False
+        }),
         'CPUExecutionProvider'
     ]
     return ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers), ort.InferenceSession("weights/yolov9_detect_plate.onnx", sess_options, providers=providers), ort.InferenceSession("weights/parseq_2.onnx", sess_options, providers=providers)

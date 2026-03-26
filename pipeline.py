@@ -6,6 +6,7 @@ import os
 import csv
 import time
 from datetime import datetime
+import re
 
 from config import OCRResult, WEIGHT_VEHICLE, WEIGHT_PLATE, WEIGHT_OCR
 from utils import (enhance_plate_quality, preprocess_and_normalize_ocr, 
@@ -61,7 +62,7 @@ def process_single_frame(img_bgr,
         needs_ocr = True
 
         if track_id in ocr_cache:
-            if ocr_cache[track_id].confidence >= 0.80 and ocr_cache[track_id].update_count >= 5:
+            if ocr_cache[track_id].confidence >= 0.65 and ocr_cache[track_id].update_count >= 5:
                 needs_ocr = False
                 final_text = ocr_cache[track_id].text
 
@@ -85,6 +86,10 @@ def process_single_frame(img_bgr,
 
                 img_plate_raw = img_bgr[abs_y:abs_y+p_h, abs_x:abs_x+p_w]
                 if img_plate_raw.size == 0: continue
+                
+                raw_ratio = img_plate_raw.shape[1] / img_plate_raw.shape[0]
+                if raw_ratio < 0.3 or raw_ratio > 5.0:
+                    continue
 
                 img_plate = enhance_plate_quality(img_plate_raw)
                 if img_plate.shape[0] / img_plate.shape[1] >= 1.5:
@@ -114,6 +119,17 @@ def process_single_frame(img_bgr,
 
                 holistic_score = (vehicle_conf * WEIGHT_VEHICLE) + (plate_conf * WEIGHT_PLATE) + (ocr_conf * WEIGHT_OCR)
                 
+                # --- Kiểm tra định dạng bằng regex ---
+                if ratio > 2.2:
+                    # Nếu là biển dài (ô tô), tối thiểu phải có 6 ký tự. "AU1" sẽ bị phạt.
+                    if len(current_text) < 6:
+                        holistic_score *= 0.50
+                else:
+                    # Nếu là biển ngắn (xe máy), phải đúng định dạng "XX-YX 123.45". Nếu không, phạt nặng.
+                    pattern = r"^\d{2}-[A-Z]\d \d{3}\.\d{2}$"
+                    if not re.match(pattern, current_text):
+                        holistic_score *= 0.70
+                
                 if holistic_score > best_plate_conf:
                     best_plate_conf = holistic_score
                     final_text = current_text
@@ -133,7 +149,7 @@ def process_single_frame(img_bgr,
         display_text = ""
         if track_id in ocr_cache:
             res = ocr_cache[track_id]
-            if res.confidence >= 0.80:
+            if res.confidence >= 0.65:
                 display_text = res.text
                 
                 if not res.is_logged:

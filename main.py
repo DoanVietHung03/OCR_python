@@ -3,7 +3,6 @@ import cv2
 import time
 import os
 import csv
-import queue
 import threading
 import multiprocessing
 import onnxruntime as ort
@@ -15,10 +14,11 @@ from flask import Flask, Response, render_template_string
 from config import TARGET_VEHICLES
 from pipeline import process_single_frame
 
-# Khởi tạo Flask App
 app = Flask(__name__, static_folder='event_logs/images', static_url_path='/images')
 
-frame_queue = queue.Queue(maxsize=3)
+# --- THAY ĐỔI LỚN: Dùng biến toàn cục để chống giật lag thay vì Queue ---
+latest_display = {"combined": None}
+display_lock = threading.Lock()
 stop_event = threading.Event()
 
 HTML_TEMPLATE = """
@@ -29,7 +29,7 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LPR Security Dashboard - BLACK EDITION</title>
     <style>
-        body { font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #000000; color: #eeeeee; text-align: center; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background-color: #000000; color: #eeeeee; text-align: center; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
         h1 { color: #00ff88; margin-top: 10px; margin-bottom: 15px; text-shadow: 0 0 15px rgba(0, 255, 136, 0.5); font-size: 2.5rem; font-weight: 700; }
         .btn-history { display: inline-block; margin-bottom: 20px; padding: 10px 25px; background-color: #111111; color: #00ff88; text-decoration: none; font-size: 16px; font-weight: bold; border: 2px solid #00ff88; border-radius: 8px; box-shadow: 0 0 10px rgba(0, 255, 136, 0.2); transition: all 0.3s ease; }
         .btn-history:hover { background-color: #00ff88; color: #000000; box-shadow: 0 0 20px rgba(0, 255, 136, 0.6); }
@@ -49,17 +49,15 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- SỬA LỖI ĐỒNG BỘ Ở ĐÂY ---
 class ThreadedCamera:
     def __init__(self, src):
         self.cap = cv2.VideoCapture(src)
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if self.fps <= 0:
-            self.fps = 25.0 
+        if self.fps <= 0: self.fps = 25.0 
             
         self.target_frame_time = 1.0 / self.fps
         self.ret, self.frame = self.cap.read()
-        self.has_new = True # Báo hiệu đã có hình mới
+        self.has_new = True 
         self.running = True
         self.thread = threading.Thread(target=self.update, daemon=True)
         self.thread.start()
@@ -74,7 +72,7 @@ class ThreadedCamera:
             
             self.frame = frame 
             self.ret = ret
-            self.has_new = True # Cập nhật cờ khi có hình mới
+            self.has_new = True 
             
             elapsed_time = time.time() - start_time
             sleep_time = self.target_frame_time - elapsed_time
@@ -82,7 +80,6 @@ class ThreadedCamera:
                 time.sleep(sleep_time)
 
     def read(self):
-        # Trả về dữ liệu kèm cờ has_new, sau đó hạ cờ xuống ngay lập tức
         new = self.has_new
         self.has_new = False
         return self.ret, self.frame, new
@@ -93,7 +90,7 @@ class ThreadedCamera:
         if self.thread.is_alive(): self.thread.join()
         self.cap.release()
 
-def video_processing_worker(stop_event, frame_queue, vehicle_session, plate_session, parseq_session):
+def video_processing_worker(stop_event, vehicle_session, plate_session, parseq_session):
     vehicle_in, vehicle_out = [i.name for i in vehicle_session.get_inputs()], [o.name for o in vehicle_session.get_outputs()]
     plate_in, plate_out = [i.name for i in plate_session.get_inputs()], [o.name for o in plate_session.get_outputs()]
     parseq_in, parseq_out = [i.name for i in parseq_session.get_inputs()], [o.name for o in parseq_session.get_outputs()]
@@ -114,9 +111,13 @@ def video_processing_worker(stop_event, frame_queue, vehicle_session, plate_sess
     executor = ThreadPoolExecutor(max_workers=2)
     SCALE_RATIO = 0.6 
     
-    # Biến tính FPS thực tế
-    fps_avg = 0.0
-    last_time = time.perf_counter()
+    # --- THUẬT TOÁN ĐẾM FPS MỚI (Cực kỳ ổn định) ---
+    fps_timer = time.time()
+    cam1_frame_count = 0
+    cam2_frame_count = 0
+    cam1_fps = 0.0
+    cam2_fps = 0.0
+    
     last_display1, last_display2 = None, None
 
     try:
@@ -128,23 +129,24 @@ def video_processing_worker(stop_event, frame_queue, vehicle_session, plate_sess
                 print("[INFO] Video đã kết thúc.")
                 break 
 
-            # NẾU KHÔNG CÓ HÌNH MỚI -> Bỏ qua, nhường CPU để giảm lag
             if not new1 and not new2:
                 time.sleep(0.005)
                 continue
 
-            # Tính toán FPS THỰC TẾ
-            curr_time = time.perf_counter()
-            delta = curr_time - last_time
-            last_time = curr_time
-            if delta > 0:
-                inst_fps = 1.0 / delta
-                fps_avg = (0.1 * inst_fps) + (0.9 * fps_avg) # Làm mượt số hiển thị
-            fps_str = f"FPS: {fps_avg:.1f}"
+            # Tính tổng số frame đã xử lý trong 1 giây
+            if ret1 and new1: cam1_frame_count += 1
+            if ret2 and new2: cam2_frame_count += 1
+            
+            now = time.time()
+            if now - fps_timer >= 1.0:
+                cam1_fps = cam1_frame_count / (now - fps_timer)
+                cam2_fps = cam2_frame_count / (now - fps_timer)
+                cam1_frame_count = 0
+                cam2_frame_count = 0
+                fps_timer = now
 
             future1, future2 = None, None
 
-            # Chỉ xử lý AI nếu camera có khung hình MỚI
             if ret1 and new1:
                 disp1 = frame1.copy()
                 future1 = executor.submit(process_single_frame, disp1, vehicle_session, plate_session, parseq_session, vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out, allowed_vehicle_ids, tracker_cam1, cache_cam1)
@@ -163,22 +165,29 @@ def video_processing_worker(stop_event, frame_queue, vehicle_session, plate_sess
             dash1, dash2 = None, None
             if ret1 and last_display1 is not None:
                 d1 = last_display1.copy()
-                cv2.putText(d1, f"CAM 1 | {fps_str}", (20, d1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,0), 4, cv2.LINE_AA)
-                cv2.putText(d1, f"CAM 1 | {fps_str}", (20, d1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2, cv2.LINE_AA)
+                cv2.putText(d1, f"CAM 1 | FPS: {cam1_fps:.1f}", (20, d1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,0), 4, cv2.LINE_AA)
+                cv2.putText(d1, f"CAM 1 | FPS: {cam1_fps:.1f}", (20, d1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2, cv2.LINE_AA)
                 dash1 = cv2.resize(d1, (0, 0), fx=SCALE_RATIO, fy=SCALE_RATIO)
 
             if ret2 and last_display2 is not None:
                 d2 = last_display2.copy()
-                cv2.putText(d2, f"CAM 2 | {fps_str}", (20, d2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,0), 4, cv2.LINE_AA)
-                cv2.putText(d2, f"CAM 2 | {fps_str}", (20, d2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2, cv2.LINE_AA)
+                cv2.putText(d2, f"CAM 2 | FPS: {cam2_fps:.1f}", (20, d2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,0), 4, cv2.LINE_AA)
+                cv2.putText(d2, f"CAM 2 | FPS: {cam2_fps:.1f}", (20, d2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2, cv2.LINE_AA)
                 dash2 = cv2.resize(d2, (0, 0), fx=SCALE_RATIO, fy=SCALE_RATIO)
                 
-            try:
-                # Đẩy vào queue chỉ khi queue chưa đầy (tránh nghẽn mạng)
-                if not frame_queue.full():
-                    frame_queue.put((dash1, dash2), block=False)
-            except queue.Full:
-                pass
+            # Ghép ảnh và lưu vào biến toàn cục (Global Lock)
+            combined = None
+            if dash1 is not None and dash2 is not None:
+                h1, w1 = dash1.shape[:2]
+                h2, w2 = dash2.shape[:2]
+                if h1 != h2: dash2 = cv2.resize(dash2, (int(w2 * h1 / h2), h1))
+                combined = cv2.hconcat([dash1, dash2])
+            elif dash1 is not None: combined = dash1
+            elif dash2 is not None: combined = dash2
+            
+            if combined is not None:
+                with display_lock:
+                    latest_display["combined"] = combined
 
     finally:
         executor.shutdown(wait=False)
@@ -197,23 +206,20 @@ def load_models():
     return ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers), ort.InferenceSession("weights/yolov9_detect_plate.onnx", sess_options, providers=providers), ort.InferenceSession("weights/parseq_2.onnx", sess_options, providers=providers)
 
 def generate_frames():
+    """Hàm lấy ảnh độc lập cho Web, ổn định ở mức 30 FPS"""
     while True:
-        try:
-            dash1, dash2 = frame_queue.get(timeout=0.1)
-            if dash1 is not None and dash2 is not None:
-                h1, w1 = dash1.shape[:2]
-                h2, w2 = dash2.shape[:2]
-                if h1 != h2: dash2 = cv2.resize(dash2, (int(w2 * h1 / h2), h1))
-                combined = cv2.hconcat([dash1, dash2])
-            elif dash1 is not None: combined = dash1
-            elif dash2 is not None: combined = dash2
-            else: continue
-
-            ret, buffer = cv2.imencode('.jpg', combined, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+        frame_to_encode = None
+        with display_lock:
+            if latest_display["combined"] is not None:
+                frame_to_encode = latest_display["combined"].copy()
+        
+        if frame_to_encode is not None:
+            ret, buffer = cv2.imencode('.jpg', frame_to_encode, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
             if ret:
                 yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        except queue.Empty:
-            if stop_event.is_set(): break
+        
+        # Ép tốc độ mạng stream ở khoảng 30 FPS để không làm nặng trình duyệt
+        time.sleep(0.033)
 
 # --- Các Route của Flask ---
 @app.route('/')
@@ -249,10 +255,8 @@ def view_history():
             .col-id { color: #00e5ff; font-weight: bold; }
             
             .img-container img { border-radius: 4px; transition: transform 0.2s; }
-            /* Ảnh xe toàn cảnh (viền xám) */
             .img-veh { max-width: 200px; border: 1px solid #333; }
             .img-veh:hover { transform: scale(2.5); z-index: 100; position: relative; border-color: #00ff88; }
-            /* Ảnh crop biển số (viền xanh neon) */
             .img-pla { max-width: 150px; border: 2px solid #00e5ff; }
             .img-pla:hover { transform: scale(3.5); z-index: 100; position: relative; box-shadow: 0 0 15px #00e5ff;}
             
@@ -313,7 +317,7 @@ if __name__ == "__main__":
     print("[INFO] Khởi động luồng xử lý AI (Background Thread)...")
     worker_thread = threading.Thread(
         target=video_processing_worker,
-        args=(stop_event, frame_queue, vehicle_session, plate_session, parseq_session),
+        args=(stop_event, vehicle_session, plate_session, parseq_session),
         daemon=True
     )
     worker_thread.start()

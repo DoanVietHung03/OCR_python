@@ -18,11 +18,9 @@ from pipeline import process_single_frame
 # Khởi tạo Flask App
 app = Flask(__name__, static_folder='event_logs/images', static_url_path='/images')
 
-# Các biến toàn cục để giao tiếp giữa luồng AI và luồng Web
 frame_queue = queue.Queue(maxsize=3)
 stop_event = threading.Event()
 
-# Giao diện HTML đơn giản nhúng ngay trong code 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -31,79 +29,18 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LPR Security Dashboard - BLACK EDITION</title>
     <style>
-        body { 
-            font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; 
-            background-color: #000000; 
-            color: #eeeeee; 
-            text-align: center; 
-            margin: 0; 
-            padding: 20px; 
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
-        }
-
-        h1 { 
-            color: #00ff88; 
-            margin-top: 10px;
-            margin-bottom: 15px; 
-            text-shadow: 0 0 15px rgba(0, 255, 136, 0.5); 
-            font-size: 2.5rem;
-            font-weight: 700;
-        }
-
-        /* --- Nút bấm chuyển trang --- */
-        .btn-history {
-            display: inline-block;
-            margin-bottom: 20px;
-            padding: 10px 25px;
-            background-color: #111111;
-            color: #00ff88;
-            text-decoration: none;
-            font-size: 16px;
-            font-weight: bold;
-            border: 2px solid #00ff88;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 255, 136, 0.2);
-            transition: all 0.3s ease;
-        }
-
-        .btn-history:hover {
-            background-color: #00ff88;
-            color: #000000;
-            box-shadow: 0 0 20px rgba(0, 255, 136, 0.6);
-        }
-
-        .video-container { 
-            max-width: 95%; 
-            background: #000000; 
-            padding: 10px; 
-            border-radius: 12px; 
-            border: 2px solid #00ff88;
-            box-shadow: 0 0 25px rgba(0, 255, 136, 0.2); 
-        }
-
-        img { 
-            width: 100%; 
-            height: auto; 
-            border-radius: 8px; 
-            display: block; 
-        }
-
-        .status { 
-            margin-top: 25px; 
-            color: #666666; 
-            font-size: 14px; 
-            font-weight: 300;
-        }
+        body { font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #000000; color: #eeeeee; text-align: center; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        h1 { color: #00ff88; margin-top: 10px; margin-bottom: 15px; text-shadow: 0 0 15px rgba(0, 255, 136, 0.5); font-size: 2.5rem; font-weight: 700; }
+        .btn-history { display: inline-block; margin-bottom: 20px; padding: 10px 25px; background-color: #111111; color: #00ff88; text-decoration: none; font-size: 16px; font-weight: bold; border: 2px solid #00ff88; border-radius: 8px; box-shadow: 0 0 10px rgba(0, 255, 136, 0.2); transition: all 0.3s ease; }
+        .btn-history:hover { background-color: #00ff88; color: #000000; box-shadow: 0 0 20px rgba(0, 255, 136, 0.6); }
+        .video-container { max-width: 95%; background: #000000; padding: 10px; border-radius: 12px; border: 2px solid #00ff88; box-shadow: 0 0 25px rgba(0, 255, 136, 0.2); }
+        img { width: 100%; height: auto; border-radius: 8px; display: block; }
+        .status { margin-top: 25px; color: #666666; font-size: 14px; font-weight: 300; }
     </style>
 </head>
 <body>
     <h1>LPR SECURITY DASHBOARD</h1>
-    
-    <a href="/history" class="btn-history">📁 Xem Lịch Sử Nhận Diện</a>
-
+    <a href="/history" class="btn-history" target="_blank">📁 Xem Lịch Sử Nhận Diện</a>
     <div class="video-container">
         <img src="{{ url_for('video_feed') }}" alt="Live Video Feed">
     </div>
@@ -112,6 +49,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
+# --- SỬA LỖI ĐỒNG BỘ Ở ĐÂY ---
 class ThreadedCamera:
     def __init__(self, src):
         self.cap = cv2.VideoCapture(src)
@@ -121,6 +59,7 @@ class ThreadedCamera:
             
         self.target_frame_time = 1.0 / self.fps
         self.ret, self.frame = self.cap.read()
+        self.has_new = True # Báo hiệu đã có hình mới
         self.running = True
         self.thread = threading.Thread(target=self.update, daemon=True)
         self.thread.start()
@@ -133,31 +72,31 @@ class ThreadedCamera:
                 self.running = False
                 break
             
-            self.ret, self.frame = ret, frame 
+            self.frame = frame 
+            self.ret = ret
+            self.has_new = True # Cập nhật cờ khi có hình mới
+            
             elapsed_time = time.time() - start_time
             sleep_time = self.target_frame_time - elapsed_time
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
     def read(self):
-        return self.ret, self.frame
+        # Trả về dữ liệu kèm cờ has_new, sau đó hạ cờ xuống ngay lập tức
+        new = self.has_new
+        self.has_new = False
+        return self.ret, self.frame, new
         
-    def isOpened(self):
-        return self.cap.isOpened()
-
+    def isOpened(self): return self.cap.isOpened()
     def release(self):
         self.running = False
-        if self.thread.is_alive():
-            self.thread.join()
+        if self.thread.is_alive(): self.thread.join()
         self.cap.release()
 
 def video_processing_worker(stop_event, frame_queue, vehicle_session, plate_session, parseq_session):
-    vehicle_in = [i.name for i in vehicle_session.get_inputs()]
-    vehicle_out = [o.name for o in vehicle_session.get_outputs()]
-    plate_in = [i.name for i in plate_session.get_inputs()]
-    plate_out = [o.name for o in plate_session.get_outputs()]
-    parseq_in = [i.name for i in parseq_session.get_inputs()]
-    parseq_out = [o.name for o in parseq_session.get_outputs()]
+    vehicle_in, vehicle_out = [i.name for i in vehicle_session.get_inputs()], [o.name for o in vehicle_session.get_outputs()]
+    plate_in, plate_out = [i.name for i in plate_session.get_inputs()], [o.name for o in plate_session.get_outputs()]
+    parseq_in, parseq_out = [i.name for i in parseq_session.get_inputs()], [o.name for o in parseq_session.get_outputs()]
 
     allowed_vehicle_ids = list(TARGET_VEHICLES.keys())
 
@@ -168,89 +107,78 @@ def video_processing_worker(stop_event, frame_queue, vehicle_session, plate_sess
         print("[LỖI] Không thể đọc video. Kiểm tra lại đường dẫn file!")
         return
 
-    frame_count = 0
-    FRAME_SKIP_INTERVAL = 3
-    last_display1 = None
-    last_display2 = None
+    tracker_cam1 = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=30, minimum_matching_threshold=0.8, frame_rate=25)
+    tracker_cam2 = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=30, minimum_matching_threshold=0.8, frame_rate=25)
 
-    fps = 25
-    track_buffer = 30
-    
-    tracker_cam1 = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=track_buffer, minimum_matching_threshold=0.8, frame_rate=fps)
-    tracker_cam2 = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=track_buffer, minimum_matching_threshold=0.8, frame_rate=fps)
-
-    cache_cam1 = {}
-    cache_cam2 = {}
-
-    executor = ThreadPoolExecutor(max_workers=1)
+    cache_cam1, cache_cam2 = {}, {}
+    executor = ThreadPoolExecutor(max_workers=2)
     SCALE_RATIO = 0.6 
+    
+    # Biến tính FPS thực tế
+    fps_avg = 0.0
+    last_time = time.perf_counter()
+    last_display1, last_display2 = None, None
 
     try:
         while not stop_event.is_set():
-            start_cycle = time.perf_counter()
-
-            ret1, frame1 = cap1.read()
-            ret2, frame2 = cap2.read()
+            ret1, frame1, new1 = cap1.read()
+            ret2, frame2, new2 = cap2.read()
 
             if not ret1 and not ret2:
                 print("[INFO] Video đã kết thúc.")
                 break 
 
-            if frame_count % FRAME_SKIP_INTERVAL == 0:
-                future1, future2 = None, None
+            # NẾU KHÔNG CÓ HÌNH MỚI -> Bỏ qua, nhường CPU để giảm lag
+            if not new1 and not new2:
+                time.sleep(0.005)
+                continue
 
-                if ret1:
-                    future1 = executor.submit(
-                        process_single_frame, frame1, 
-                        vehicle_session, plate_session, parseq_session, 
-                        vehicle_in, vehicle_out, plate_in, plate_out, 
-                        parseq_in, parseq_out, allowed_vehicle_ids, 
-                        tracker_cam1, cache_cam1
-                    )
-                if ret2:
-                    future2 = executor.submit(
-                        process_single_frame, frame2, 
-                        vehicle_session, plate_session, parseq_session, 
-                        vehicle_in, vehicle_out, plate_in, plate_out, 
-                        parseq_in, parseq_out, allowed_vehicle_ids, 
-                        tracker_cam2, cache_cam2
-                    )
+            # Tính toán FPS THỰC TẾ
+            curr_time = time.perf_counter()
+            delta = curr_time - last_time
+            last_time = curr_time
+            if delta > 0:
+                inst_fps = 1.0 / delta
+                fps_avg = (0.1 * inst_fps) + (0.9 * fps_avg) # Làm mượt số hiển thị
+            fps_str = f"FPS: {fps_avg:.1f}"
 
-                if future1: future1.result()
-                if future2: future2.result()
+            future1, future2 = None, None
 
-                if ret1: last_display1 = frame1.copy()
-                if ret2: last_display2 = frame2.copy()
+            # Chỉ xử lý AI nếu camera có khung hình MỚI
+            if ret1 and new1:
+                disp1 = frame1.copy()
+                future1 = executor.submit(process_single_frame, disp1, vehicle_session, plate_session, parseq_session, vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out, allowed_vehicle_ids, tracker_cam1, cache_cam1)
+            
+            if ret2 and new2:
+                disp2 = frame2.copy()
+                future2 = executor.submit(process_single_frame, disp2, vehicle_session, plate_session, parseq_session, vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out, allowed_vehicle_ids, tracker_cam2, cache_cam2)
 
-            end_cycle = time.perf_counter()
-            cycle_time_ms = (end_cycle - start_cycle) * 1000.0
-            display_fps = 1000.0 / cycle_time_ms if cycle_time_ms > 0 else 0.0
-            fps_str = f"FPS: {display_fps:.1f}"
+            if future1: 
+                future1.result()
+                last_display1 = disp1
+            if future2: 
+                future2.result()
+                last_display2 = disp2
 
-            if ret1:
-                disp1 = frame1.copy() if last_display1 is None else last_display1.copy()
-                cv2.putText(disp1, f"CAM 1 | {fps_str}", (20, disp1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
-                cv2.putText(disp1, f"CAM 1 | {fps_str}", (20, disp1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
-                dash1 = cv2.resize(disp1, (0, 0), fx=SCALE_RATIO, fy=SCALE_RATIO)
-            else:
-                dash1 = None
+            dash1, dash2 = None, None
+            if ret1 and last_display1 is not None:
+                d1 = last_display1.copy()
+                cv2.putText(d1, f"CAM 1 | {fps_str}", (20, d1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,0), 4, cv2.LINE_AA)
+                cv2.putText(d1, f"CAM 1 | {fps_str}", (20, d1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2, cv2.LINE_AA)
+                dash1 = cv2.resize(d1, (0, 0), fx=SCALE_RATIO, fy=SCALE_RATIO)
 
-            if ret2:
-                disp2 = frame2.copy() if last_display2 is None else last_display2.copy()
-                cv2.putText(disp2, f"CAM 2 | {fps_str}", (20, disp2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
-                cv2.putText(disp2, f"CAM 2 | {fps_str}", (20, disp2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
-                dash2 = cv2.resize(disp2, (0, 0), fx=SCALE_RATIO, fy=SCALE_RATIO)
-            else:
-                dash2 = None
+            if ret2 and last_display2 is not None:
+                d2 = last_display2.copy()
+                cv2.putText(d2, f"CAM 2 | {fps_str}", (20, d2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,0), 4, cv2.LINE_AA)
+                cv2.putText(d2, f"CAM 2 | {fps_str}", (20, d2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2, cv2.LINE_AA)
+                dash2 = cv2.resize(d2, (0, 0), fx=SCALE_RATIO, fy=SCALE_RATIO)
                 
             try:
-                # Đẩy 2 frame vào queue để Flask lấy ra stream
-                frame_queue.put((dash1, dash2), block=False)
-                time.sleep(0.02)
+                # Đẩy vào queue chỉ khi queue chưa đầy (tránh nghẽn mạng)
+                if not frame_queue.full():
+                    frame_queue.put((dash1, dash2), block=False)
             except queue.Full:
                 pass
-
-            frame_count += 1
 
     finally:
         executor.shutdown(wait=False)
@@ -260,66 +188,36 @@ def video_processing_worker(stop_event, frame_queue, vehicle_session, plate_sess
 def load_models():
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    optimal_threads = max(2, int(multiprocessing.cpu_count() * 0.75))
-    sess_options.intra_op_num_threads = optimal_threads
+    sess_options.intra_op_num_threads = max(2, int(multiprocessing.cpu_count() * 0.75))
 
     providers = [
-        ('CUDAExecutionProvider', {
-            'device_id': 0,
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'arena_extend_strategy': 'kNextPowerOfTwo',
-            'do_copy_in_default_stream': True,
-        }),
+        ('CUDAExecutionProvider', {'device_id': 0, 'cudnn_conv_algo_search': 'EXHAUSTIVE', 'arena_extend_strategy': 'kNextPowerOfTwo', 'do_copy_in_default_stream': True}),
         'CPUExecutionProvider'
     ]
-
-    v_sess = ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers)
-    p_sess = ort.InferenceSession("weights/yolov9_detect_plate.onnx", sess_options, providers=providers)
-    pq_sess = ort.InferenceSession("weights/parseq_2.onnx", sess_options, providers=providers)
-    return v_sess, p_sess, pq_sess
+    return ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers), ort.InferenceSession("weights/yolov9_detect_plate.onnx", sess_options, providers=providers), ort.InferenceSession("weights/parseq_2.onnx", sess_options, providers=providers)
 
 def generate_frames():
-    """Hàm Generator liên tục lấy ảnh từ queue, ghép lại và trả về chuẩn MJPEG."""
     while True:
         try:
             dash1, dash2 = frame_queue.get(timeout=0.1)
-            
-            # Ghép 2 camera lại cạnh nhau (side-by-side)
             if dash1 is not None and dash2 is not None:
                 h1, w1 = dash1.shape[:2]
                 h2, w2 = dash2.shape[:2]
-                # Nếu chiều cao chênh lệch, scale dash2 theo dash1 để ghép cho đẹp
-                if h1 != h2:
-                    dash2 = cv2.resize(dash2, (int(w2 * h1 / h2), h1))
+                if h1 != h2: dash2 = cv2.resize(dash2, (int(w2 * h1 / h2), h1))
                 combined = cv2.hconcat([dash1, dash2])
-            elif dash1 is not None:
-                combined = dash1
-            elif dash2 is not None:
-                combined = dash2
-            else:
-                continue
+            elif dash1 is not None: combined = dash1
+            elif dash2 is not None: combined = dash2
+            else: continue
 
-            # Nén frame đã ghép thành JPEG
-            ret, buffer = cv2.imencode('.jpg', combined, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-            if not ret:
-                continue
-                
-            frame_bytes = buffer.tobytes()
-            # Yield dữ liệu theo chuẩn multipart/x-mixed-replace
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                   
+            ret, buffer = cv2.imencode('.jpg', combined, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            if ret:
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
         except queue.Empty:
-            if stop_event.is_set():
-                break
-            continue
+            if stop_event.is_set(): break
 
 # --- Các Route của Flask ---
-
 @app.route('/')
-def index():
-    """Trang chủ HTML."""
-    return render_template_string(HTML_TEMPLATE)
+def index(): return render_template_string(HTML_TEMPLATE)
 
 @app.route('/history')
 def view_history():
@@ -330,7 +228,6 @@ def view_history():
             reader = csv.DictReader(f)
             events = list(reader)
             
-    # Đảo ngược để cái mới nhất (thời gian gần nhất) hiện lên đầu
     events.reverse() 
     
     html = """
@@ -344,19 +241,14 @@ def view_history():
             .header-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 2px solid #00ff88; padding-bottom: 10px; }
             .btn-back { color: #00ff88; text-decoration: none; font-weight: bold; border: 1px solid #00ff88; padding: 5px 15px; border-radius: 5px; }
             .btn-back:hover { background: #00ff88; color: #000; }
-            
             table { width: 100%; border-collapse: collapse; background: #111; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
             th, td { border: 1px solid #222; padding: 15px; text-align: center; }
             th { background: #1a1a1a; color: #00ff88; text-transform: uppercase; letter-spacing: 1px; }
-            
-            /* Làm nổi bật cột thời gian */
             .col-time { color: #888; font-family: monospace; font-size: 1.1rem; }
             .col-plate { font-size: 1.5rem; font-weight: bold; color: #ffff00; text-shadow: 0 0 5px rgba(255,255,0,0.3); }
             .col-id { color: #00e5ff; font-weight: bold; }
-            
             .img-container img { max-width: 250px; border: 1px solid #333; border-radius: 4px; transition: transform 0.2s; }
             .img-container img:hover { transform: scale(2.5); z-index: 100; position: relative; border-color: #00ff88; }
-            
             tr:hover { background: #181818; }
         </style>
     </head>
@@ -365,16 +257,9 @@ def view_history():
             <h2>LỊCH SỬ HỆ THỐNG LPR</h2>
             <a href="/" class="btn-back">&larr; QUAY LẠI LIVE CAMERA</a>
         </div>
-        
         <table>
             <thead>
-                <tr>
-                    <th>Thời gian ghi nhận</th>
-                    <th>ID Tracker</th>
-                    <th>Biển số nhận diện</th>
-                    <th>Độ tin cậy</th>
-                    <th>Hình ảnh đối soát (Rê chuột để phóng to)</th>
-                </tr>
+                <tr><th>Thời gian ghi nhận</th><th>ID Tracker</th><th>Biển số nhận diện</th><th>Độ tin cậy</th><th>Hình ảnh đối soát</th></tr>
             </thead>
             <tbody>
                 {% for e in events %}
@@ -382,12 +267,8 @@ def view_history():
                     <td class="col-time">{{ e['Thời gian'] }}</td>
                     <td class="col-id">#{{ e['ID_Xe'] }}</td>
                     <td class="col-plate">{{ e['Biển_số'] }}</td>
-                    <td><span style="color: {% if e['Độ_tự_tin']|float > 0.8 %}#00ff00{% else %}#ffaa00{% endif %};">
-                        {{ (e['Độ_tự_tin']|float * 100)|int }}%
-                    </span></td>
-                    <td class="img-container">
-                        <img src="/images/{{ e['File_ảnh'] }}" alt="Plate Crop">
-                    </td>
+                    <td><span style="color: {% if e['Độ_tự_tin']|float > 0.8 %}#00ff00{% else %}#ffaa00{% endif %};">{{ (e['Độ_tự_tin']|float * 100)|int }}%</span></td>
+                    <td class="img-container"><img src="/images/{{ e['File_ảnh'] }}" alt="Plate Crop"></td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -399,9 +280,7 @@ def view_history():
 
 @app.route('/video_feed')
 def video_feed():
-    """Endpoint cung cấp luồng MJPEG liên tục."""
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
 
 if __name__ == "__main__":
     print("[INFO] Đang tải các mô hình ONNX...")
@@ -415,9 +294,8 @@ if __name__ == "__main__":
     )
     worker_thread.start()
 
-    print("[INFO] Server đang chạy! Mở trình duyệt và truy cập: http://<ĐỊA_CHỈ_IP_UBUNTU>:5000")
+    print("[INFO] Server đang chạy! Mở trình duyệt và truy cập: http://<ĐỊA_CHỈ_IP_UBUNTU>:5050")
     try:
-        # Chạy Flask ở chế độ đa luồng, host='0.0.0.0' để cho phép máy ngoài mạng truy cập vào
         app.run(host='0.0.0.0', port=5050, debug=False, threaded=True)
     except KeyboardInterrupt:
         print("[INFO] Đang tắt server...")

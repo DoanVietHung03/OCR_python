@@ -59,13 +59,12 @@ def load_models():
     ]
     return ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers), \
            ort.InferenceSession("weights/yolov9_detect_plate.onnx", sess_options, providers=providers), \
-           ort.InferenceSession("weights/parseq_2.onnx", sess_options, providers=providers)
+           ort.InferenceSession("weights/parseq.onnx", sess_options, providers=providers)
 
 def camera_worker(cam_id, video_path, shared_dict, stop_event):
     """Worker độc lập. Mỗi camera chiếm 1 Core CPU và 1 góc VRAM riêng rẽ"""
     print(f"[INFO] Process {cam_id} đang nạp AI Models vào VRAM...")
     
-    # AI models CHỈ ĐƯỢC nạp bên trong Process con này để cô lập Context CUDA
     vehicle_session, plate_session, parseq_session = load_models()
     
     vehicle_in, vehicle_out = [i.name for i in vehicle_session.get_inputs()], [o.name for o in vehicle_session.get_outputs()]
@@ -74,7 +73,6 @@ def camera_worker(cam_id, video_path, shared_dict, stop_event):
 
     allowed_vehicle_ids = list(TARGET_VEHICLES.keys())
     
-    # Tracker cũng được tạo riêng rẽ để không nhầm lẫn ID xe giữa các cổng
     tracker = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=30, minimum_matching_threshold=0.8, frame_rate=25)
     ocr_cache = {}
     tracker_state = {}
@@ -88,8 +86,6 @@ def camera_worker(cam_id, video_path, shared_dict, stop_event):
     frame_count = 0
     current_fps = 0.0
     SCALE_RATIO = 0.5 
-    
-    empty_frame_counter = 0
 
     while not stop_event.is_set():
         start_time = time.time()
@@ -97,26 +93,13 @@ def camera_worker(cam_id, video_path, shared_dict, stop_event):
         ret, frame = cap.retrieve()
         
         if not ret:
-            # Nếu hết video mp4, tự động phát lại từ đầu để test
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             continue
 
-        skip_ai = False
-        if empty_frame_counter > 5:
-            if frame_count % 5 != 0: skip_ai = True
-        else:
-            if frame_count % 2 != 0: skip_ai = True
-
-        if not skip_ai:
-            process_single_frame(frame, vehicle_session, plate_session, parseq_session, 
-                                vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out, 
-                                allowed_vehicle_ids, tracker, ocr_cache, tracker_state, frame_id=frame_count)
-            if len(tracker.tracked_tracks) == 0:
-                empty_frame_counter += 1
-            else:
-                empty_frame_counter = 0
-        else:
-            if empty_frame_counter > 0: empty_frame_counter += 1
+        # CHỈNH SỬA: Chạy xử lý trực tiếp trên mỗi frame để Tracking hoạt động mượt mà
+        process_single_frame(frame, vehicle_session, plate_session, parseq_session, 
+                             vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out, 
+                             allowed_vehicle_ids, tracker, ocr_cache, tracker_state, frame_id=frame_count)
 
         frame_count += 1
         now = time.time()
@@ -146,7 +129,6 @@ def generate_frames(shared_dict):
         buf1 = shared_dict.get('K1')
         buf2 = shared_dict.get('K5')
         
-        # BÍ QUYẾT TĂNG TỐC 2: Giải mã Byte ngược lại thành ảnh
         frame1 = cv2.imdecode(np.frombuffer(buf1, np.uint8), cv2.IMREAD_COLOR) if buf1 is not None else None
         frame2 = cv2.imdecode(np.frombuffer(buf2, np.uint8), cv2.IMREAD_COLOR) if buf2 is not None else None
         
@@ -164,15 +146,13 @@ def generate_frames(shared_dict):
             if ret:
                 yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + final_buffer.tobytes() + b'\r\n')
         
-        time.sleep(0.033)  # Giới hạn tốc độ gộp ảnh ở khoảng 30 FPS
+        time.sleep(0.033)
 
-# --- Các Route của Flask ---
 @app.route('/')
 def index(): return render_template_string(HTML_TEMPLATE)
 
 @app.route('/history')
 def view_history():
-    # Giữ nguyên toàn bộ mã trang Lịch sử của bạn ở đây
     events = []
     csv_path = "event_logs/history.csv"
     if os.path.exists(csv_path):
@@ -253,7 +233,6 @@ def video_feed():
     return Response(generate_frames(app.config['SHARED_DICT']), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == "__main__":
-    # Rất quan trọng: Ép Linux dùng 'spawn' thay vì 'fork' để tránh vỡ Context CUDA
     mp.set_start_method('spawn', force=True)
     
     manager = mp.Manager()
@@ -261,13 +240,11 @@ if __name__ == "__main__":
     shared_display['K1'] = None
     shared_display['K5'] = None
     
-    # Gắn shared_display vào config của Flask để truyền qua Route
     app.config['SHARED_DICT'] = shared_display
     stop_event = mp.Event()
 
     print("[INFO] Khởi động kiến trúc Đa tiến trình (Multi-processing)...")
     
-    # Khởi tạo tiến trình độc lập cho từng camera
     p1 = mp.Process(target=camera_worker, args=('K1', "CCTV/cong_K1.mp4", shared_display, stop_event))
     p2 = mp.Process(target=camera_worker, args=('K5', "CCTV/cong_K5.mp4", shared_display, stop_event))
     
@@ -276,7 +253,6 @@ if __name__ == "__main__":
 
     print("[INFO] Server đang chạy! Mở trình duyệt và truy cập: http://<ĐỊA_CHỈ_IP_UBUNTU>:5050")
     try:
-        # Tắt reloader để tránh Flask vô tình đẻ thêm tiến trình (spawn) 2 lần
         app.run(host='0.0.0.0', port=5050, debug=False, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
         print("[INFO] Đang tắt hệ thống một cách an toàn...")

@@ -1,7 +1,7 @@
-# main.py
+import os
+import torch
 import cv2
 import time
-import os
 import csv
 import multiprocessing as mp
 import onnxruntime as ort
@@ -45,15 +45,17 @@ HTML_TEMPLATE = """
 def load_models():
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    # Tắt cấu hình copy default stream để an toàn tuyệt đối
+    
+    log_severity_level = 3
+    
     providers = [
         ('CUDAExecutionProvider', {
             'device_id': 0, 
-            'cudnn_conv_algo_search': 'EXHAUSTIVE', 
+            'cudnn_conv_algo_search': 'HEURISTIC', 
+            'cudnn_conv_use_max_workspace': '1',
+            'cudnn_conv1d_pad_to_nc1d': '1',
             'arena_extend_strategy': 'kNextPowerOfTwo',
-            'do_copy_in_default_stream': False
-        }),
-        'CPUExecutionProvider'
+        })
     ]
     return ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers), \
            ort.InferenceSession("weights/yolov9_detect_plate.onnx", sess_options, providers=providers), \
@@ -75,6 +77,7 @@ def camera_worker(cam_id, video_path, shared_dict, stop_event):
     # Tracker cũng được tạo riêng rẽ để không nhầm lẫn ID xe giữa các cổng
     tracker = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=30, minimum_matching_threshold=0.8, frame_rate=25)
     ocr_cache = {}
+    tracker_state = {}
 
     cap = cv2.VideoCapture(video_path)
     fps_target = cap.get(cv2.CAP_PROP_FPS)
@@ -84,7 +87,7 @@ def camera_worker(cam_id, video_path, shared_dict, stop_event):
     fps_timer = time.time()
     frame_count = 0
     current_fps = 0.0
-    SCALE_RATIO = 0.6 
+    SCALE_RATIO = 0.5 
     
     empty_frame_counter = 0
 
@@ -99,20 +102,21 @@ def camera_worker(cam_id, video_path, shared_dict, stop_event):
             continue
 
         skip_ai = False
-        if empty_frame_counter > 10:
-            if frame_count % 5 != 0:
-                skip_ai = True
+        if empty_frame_counter > 5:
+            if frame_count % 5 != 0: skip_ai = True
+        else:
+            if frame_count % 2 != 0: skip_ai = True
 
         if not skip_ai:
             process_single_frame(frame, vehicle_session, plate_session, parseq_session, 
                                 vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out, 
-                                allowed_vehicle_ids, tracker, ocr_cache, frame_id=frame_count)
+                                allowed_vehicle_ids, tracker, ocr_cache, tracker_state, frame_id=frame_count)
             if len(tracker.tracked_tracks) == 0:
                 empty_frame_counter += 1
             else:
                 empty_frame_counter = 0
         else:
-            empty_frame_counter += 1
+            if empty_frame_counter > 0: empty_frame_counter += 1
 
         frame_count += 1
         now = time.time()

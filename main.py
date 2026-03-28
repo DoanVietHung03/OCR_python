@@ -1,8 +1,8 @@
 import os
-import torch
 import cv2
 import time
 import csv
+import queue
 import multiprocessing as mp
 import onnxruntime as ort
 import supervision as sv
@@ -14,6 +14,7 @@ from pipeline import process_single_frame
 
 app = Flask(__name__, static_folder='event_logs/images', static_url_path='/images')
 
+# GIỮ NGUYÊN BẢN HTML GỐC CỦA BẠN
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -45,112 +46,130 @@ HTML_TEMPLATE = """
 def load_models():
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    
-    log_severity_level = 3
-    
     providers = [
         ('CUDAExecutionProvider', {
-            'device_id': 0, 
-            'cudnn_conv_algo_search': 'HEURISTIC', 
+            'device_id': 0,
+            'cudnn_conv_algo_search': 'EXHAUSTIVE',
             'cudnn_conv_use_max_workspace': '1',
-            'cudnn_conv1d_pad_to_nc1d': '1',
             'arena_extend_strategy': 'kNextPowerOfTwo',
-        })
+        }),
+        'CPUExecutionProvider'
     ]
     return ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers), \
            ort.InferenceSession("weights/yolov9_detect_plate.onnx", sess_options, providers=providers), \
            ort.InferenceSession("weights/parseq.onnx", sess_options, providers=providers)
 
-def camera_worker(cam_id, video_path, shared_dict, stop_event):
-    """Worker độc lập. Mỗi camera chiếm 1 Core CPU và 1 góc VRAM riêng rẽ"""
-    print(f"[INFO] Process {cam_id} đang nạp AI Models vào VRAM...")
-    
-    vehicle_session, plate_session, parseq_session = load_models()
-    
-    vehicle_in, vehicle_out = [i.name for i in vehicle_session.get_inputs()], [o.name for o in vehicle_session.get_outputs()]
-    plate_in, plate_out = [i.name for i in plate_session.get_inputs()], [o.name for o in plate_session.get_outputs()]
-    parseq_in, parseq_out = [i.name for i in parseq_session.get_inputs()], [o.name for o in parseq_session.get_outputs()]
-
-    allowed_vehicle_ids = list(TARGET_VEHICLES.keys())
-    
-    tracker = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=30, minimum_matching_threshold=0.8, frame_rate=25)
-    ocr_cache = {}
-    tracker_state = {}
-
+def camera_producer(cam_id, video_path, frame_queue, stop_event):
     cap = cv2.VideoCapture(video_path)
-    fps_target = cap.get(cv2.CAP_PROP_FPS)
-    if fps_target <= 0: fps_target = 25.0
-    frame_delay = 1.0 / fps_target
-
-    fps_timer = time.time()
-    frame_count = 0
-    current_fps = 0.0
-    SCALE_RATIO = 0.5 
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     while not stop_event.is_set():
-        start_time = time.time()
-        cap.grab()
-        ret, frame = cap.retrieve()
-        
+        ret, frame = cap.read()
         if not ret:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             continue
-
-        # CHỈNH SỬA: Chạy xử lý trực tiếp trên mỗi frame để Tracking hoạt động mượt mà
-        process_single_frame(frame, vehicle_session, plate_session, parseq_session, 
-                             vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out, 
-                             allowed_vehicle_ids, tracker, ocr_cache, tracker_state, frame_id=frame_count)
-
-        frame_count += 1
-        now = time.time()
-        if now - fps_timer >= 1.0:
-            current_fps = frame_count / (now - fps_timer)
-            frame_count = 0
-            fps_timer = now
-
-        cv2.putText(frame, f"CAM {cam_id} | FPS: {current_fps:.1f}", (20, frame.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,0), 4, cv2.LINE_AA)
-        cv2.putText(frame, f"CAM {cam_id} | FPS: {current_fps:.1f}", (20, frame.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2, cv2.LINE_AA)
-
-        dash = cv2.resize(frame, (0, 0), fx=SCALE_RATIO, fy=SCALE_RATIO)
+            
+        try:
+            if frame_queue.full(): frame_queue.get_nowait()
+            frame_queue.put_nowait(frame)
+        except queue.Empty: pass
+        except queue.Full: pass
         
-        ret_encode, buffer = cv2.imencode('.jpg', dash, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
-        if ret_encode:
-            shared_dict[cam_id] = buffer.tobytes()
+        time.sleep(0.005)
         
-        elapsed = time.time() - start_time
-        if elapsed < frame_delay:
-            time.sleep(frame_delay - elapsed)
-
     cap.release()
 
-def generate_frames(shared_dict):
-    """Luồng gộp ảnh (Aggregator) chỉ có nhiệm vụ đọc từ Shared Memory"""
-    while True:
-        buf1 = shared_dict.get('K1')
-        buf2 = shared_dict.get('K5')
+def ai_consumer(q1, q2, display_queue, stop_event):
+    vehicle_session, plate_session, parseq_session = load_models()
+    vehicle_in,  vehicle_out  = [i.name for i in vehicle_session.get_inputs()],  [o.name for o in vehicle_session.get_outputs()]
+    plate_in,    plate_out    = [i.name for i in plate_session.get_inputs()],    [o.name for o in plate_session.get_outputs()]
+    parseq_in,   parseq_out   = [i.name for i in parseq_session.get_inputs()],   [o.name for o in parseq_session.get_outputs()]
+    allowed_vehicle_ids = list(TARGET_VEHICLES.keys())
+
+    cams = ['K1', 'K5']
+    trackers = {c: sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=60, minimum_matching_threshold=0.8, frame_rate=25) for c in cams}
+    ocr_caches = {c: {} for c in cams}
+    tracker_states = {c: {} for c in cams}
+    frame_ids = {c: 0 for c in cams}
+
+    last_f1, last_f2 = None, None
+    fps_start = time.time()
+    fps_counter = 0
+    current_fps = 0.0
+
+    while not stop_event.is_set():
+        new_f1, new_f2 = None, None
+        try: new_f1 = q1.get_nowait()
+        except queue.Empty: pass
         
-        frame1 = cv2.imdecode(np.frombuffer(buf1, np.uint8), cv2.IMREAD_COLOR) if buf1 is not None else None
-        frame2 = cv2.imdecode(np.frombuffer(buf2, np.uint8), cv2.IMREAD_COLOR) if buf2 is not None else None
-        
+        try: new_f2 = q2.get_nowait()
+        except queue.Empty: pass
+
+        if new_f1 is None and new_f2 is None:
+            time.sleep(0.005)
+            continue
+
+        if new_f1 is not None:
+            process_single_frame(new_f1, vehicle_session, plate_session, parseq_session,
+                                 vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out,
+                                 allowed_vehicle_ids, trackers['K1'], ocr_caches['K1'], tracker_states['K1'], frame_id=frame_ids['K1'])
+            
+            cv2.putText(new_f1, f"CAM K1 | FPS: {current_fps:.1f}", (20, new_f1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2)
+            frame_ids['K1'] += 1
+            last_f1 = new_f1
+
+        if new_f2 is not None:
+            process_single_frame(new_f2, vehicle_session, plate_session, parseq_session,
+                                 vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out,
+                                 allowed_vehicle_ids, trackers['K5'], ocr_caches['K5'], tracker_states['K5'], frame_id=frame_ids['K5'])
+            cv2.putText(new_f2, f"CAM K5 | FPS: {current_fps:.1f}", (20, new_f2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2)
+            frame_ids['K5'] += 1
+            last_f2 = new_f2
+
+        # Cập nhật ảnh liên tục để web không bị giật
         combined = None
-        if frame1 is not None and frame2 is not None:
-            h1, w1 = frame1.shape[:2]
-            h2, w2 = frame2.shape[:2]
-            if h1 != h2: frame2 = cv2.resize(frame2, (int(w2 * h1 / h2), h1))
-            combined = cv2.hconcat([frame1, frame2])
-        elif frame1 is not None: combined = frame1
-        elif frame2 is not None: combined = frame2
-        
+        if last_f1 is not None and last_f2 is not None:
+            h1, w1 = last_f1.shape[:2]
+            h2, w2 = last_f2.shape[:2]
+            f2_disp = cv2.resize(last_f2, (int(w2 * h1 / h2), h1)) if h1 != h2 else last_f2
+            combined = cv2.hconcat([last_f1, f2_disp])
+        elif last_f1 is not None: combined = last_f1
+        elif last_f2 is not None: combined = last_f2
+
         if combined is not None:
-            ret, final_buffer = cv2.imencode('.jpg', combined, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-            if ret:
-                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + final_buffer.tobytes() + b'\r\n')
-        
-        time.sleep(0.033)
+            # Gửi thẳng numpy array thô (nhỏ gọn) qua Queue, nhường việc encode cho Web stream
+            combined_small = cv2.resize(combined, (0, 0), fx=0.5, fy=0.5)
+            try:
+                if display_queue.full(): display_queue.get_nowait()
+                display_queue.put_nowait(combined_small)
+            except: pass
+
+        fps_counter += 1
+        elapsed_fps = time.time() - fps_start
+        if elapsed_fps >= 1.0:
+            current_fps = fps_counter / elapsed_fps
+            fps_counter = 0
+            fps_start = time.time()
+
+def generate_web_stream(display_queue):
+    while True:
+        try:
+            # Di chuyển imencode ra đây để giải phóng CPU cho luồng AI
+            frame = display_queue.get(timeout=2.0)
+            ret_encode, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+            if ret_encode:
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        except queue.Empty:
+            time.sleep(0.05)
 
 @app.route('/')
 def index(): return render_template_string(HTML_TEMPLATE)
 
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_web_stream(app.config['DISPLAY_Q']), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+# GIỮ NGUYÊN BẢN HISTORY GỐC CÓ CHỨC NĂNG ZOOM (HOVER) CỦA BẠN
 @app.route('/history')
 def view_history():
     events = []
@@ -159,8 +178,8 @@ def view_history():
         with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             events = list(reader)
-    events.reverse() 
-    
+    events.reverse()
+
     html = """
     <!DOCTYPE html>
     <html lang="vi">
@@ -194,12 +213,8 @@ def view_history():
         <table>
             <thead>
                 <tr>
-                    <th>Thời gian</th>
-                    <th>ID Tracker</th>
-                    <th>Biển số</th>
-                    <th>Độ tin cậy</th>
-                    <th>Ảnh Toàn Cảnh (Xe)</th>
-                    <th>Ảnh Cận Cảnh (Biển số)</th>
+                    <th>Thời gian</th><th>ID Tracker</th><th>Biển số</th>
+                    <th>Độ tin cậy</th><th>Ảnh Toàn Cảnh (Xe)</th><th>Ảnh Cận Cảnh (Biển số)</th>
                 </tr>
             </thead>
             <tbody>
@@ -209,15 +224,11 @@ def view_history():
                     <td class="col-id">#{{ e.get('ID_Xe', '') }}</td>
                     <td class="col-plate">{{ e.get('Biển_số', '') }}</td>
                     <td><span style="color: {% if e.get('Độ_tự_tin', '0')|float > 0.8 %}#00ff00{% else %}#ffaa00{% endif %};">{{ (e.get('Độ_tự_tin', '0')|float * 100)|int }}%</span></td>
-                    <td class="img-container">
-                        <img src="/images/{{ e.get('Ảnh_Xe', '') }}" alt="Vehicle" class="img-veh">
-                    </td>
+                    <td class="img-container"><img src="/images/{{ e.get('Ảnh_Xe', '') }}" alt="Vehicle" class="img-veh"></td>
                     <td class="img-container">
                         {% if e.get('Ảnh_Biển') %}
                         <img src="/images/{{ e.get('Ảnh_Biển', '') }}" alt="Plate" class="img-pla">
-                        {% else %}
-                        <span style="color: #444; font-size: 0.8rem;">(Không có ảnh)</span>
-                        {% endif %}
+                        {% else %}<span style="color: #444; font-size: 0.8rem;">(Không có ảnh)</span>{% endif %}
                     </td>
                 </tr>
                 {% endfor %}
@@ -228,35 +239,32 @@ def view_history():
     """
     return render_template_string(html, events=events)
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(app.config['SHARED_DICT']), mimetype='multipart/x-mixed-replace; boundary=frame')
-
 if __name__ == "__main__":
     mp.set_start_method('spawn', force=True)
+    q_cam1 = mp.Queue(maxsize=2)
+    q_cam2 = mp.Queue(maxsize=2)
+    display_q = mp.Queue(maxsize=2)
     
-    manager = mp.Manager()
-    shared_display = manager.dict()
-    shared_display['K1'] = None
-    shared_display['K5'] = None
-    
-    app.config['SHARED_DICT'] = shared_display
+    app.config['DISPLAY_Q'] = display_q
     stop_event = mp.Event()
 
-    print("[INFO] Khởi động kiến trúc Đa tiến trình (Multi-processing)...")
-    
-    p1 = mp.Process(target=camera_worker, args=('K1', "CCTV/cong_K1.mp4", shared_display, stop_event))
-    p2 = mp.Process(target=camera_worker, args=('K5', "CCTV/cong_K5.mp4", shared_display, stop_event))
-    
-    p1.start()
-    p2.start()
+    p_cam1 = mp.Process(target=camera_producer, args=('K1', "CCTV/cong_K1.mp4", q_cam1, stop_event))
+    p_cam2 = mp.Process(target=camera_producer, args=('K5', "CCTV/cong_K5.mp4", q_cam2, stop_event))
+    p_cam1.start()
+    p_cam2.start()
 
-    print("[INFO] Server đang chạy! Mở trình duyệt và truy cập: http://<ĐỊA_CHỈ_IP_UBUNTU>:5050")
+    p_ai = mp.Process(target=ai_consumer, args=(q_cam1, q_cam2, display_q, stop_event))
+    p_ai.start()
+
     try:
         app.run(host='0.0.0.0', port=5050, debug=False, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
-        print("[INFO] Đang tắt hệ thống một cách an toàn...")
+        pass
     finally:
         stop_event.set()
-        p1.join(timeout=2.0)
-        p2.join(timeout=2.0)
+        p_cam1.join(timeout=2.0)
+        p_cam2.join(timeout=2.0)
+        p_ai.join(timeout=3.0)
+        if p_cam1.is_alive(): p_cam1.terminate()
+        if p_cam2.is_alive(): p_cam2.terminate()
+        if p_ai.is_alive(): p_ai.terminate()

@@ -46,6 +46,11 @@ HTML_TEMPLATE = """
 def load_models():
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    
+    # Nâng số luồng lên để xử lý các node chạy trên CPU nhanh hơn, đặc biệt là phần post-processing của ByteTrack và Parseq
+    sess_options.intra_op_num_threads = 4
+    sess_options.inter_op_num_threads = 4
+    
     providers = [
         ('CUDAExecutionProvider', {
             'device_id': 0,
@@ -85,6 +90,32 @@ def ai_consumer(cam_name, frame_queue, display_queue, stop_event):
     plate_in,    plate_out    = [i.name for i in plate_session.get_inputs()],    [o.name for o in plate_session.get_outputs()]
     parseq_in,   parseq_out   = [i.name for i in parseq_session.get_inputs()],   [o.name for o in parseq_session.get_outputs()]
     allowed_vehicle_ids = list(TARGET_VEHICLES.keys())
+    
+    # ─── BẮT ĐẦU THÊM WARM-UP ──────────────────────────────────────────
+    print(f"[{cam_name}] Đang tiến hành Warm-up các model AI (sẽ mất khoảng 10-15s)...")
+    
+    # Kích thước đầu vào mặc định của YOLO là 640x640, PARSeq là 32x128
+    dummy_vehicle = np.zeros((1, 3, 640, 640), dtype=np.float32)
+    dummy_plate   = np.zeros((1, 3, 256, 256), dtype=np.float32)
+    dummy_parseq  = np.zeros((1, 3, 32, 128), dtype=np.float32)
+
+    # Chạy thử 3 lần để đảm bảo VRAM được cấp phát đầy đủ và CUDA kernel đã sẵn sàng
+    for _ in range(3):
+        vehicle_session.run(vehicle_out, {vehicle_in[0]: dummy_vehicle})
+        plate_session.run(plate_out, {plate_in[0]: dummy_plate})
+        parseq_session.run(parseq_out, {parseq_in[0]: dummy_parseq})
+        
+    print(f"[{cam_name}] Warm-up hoàn tất! Đã sẵn sàng xử lý luồng Video.")
+    
+    # XÓA RÁC TRONG QUEUE: 
+    # Trong lúc warm-up 15s, producer camera vẫn đẩy ảnh vào queue gây nghẽn.
+    # Ta cần xả hết ảnh cũ để bắt đầu với ảnh realtime mới nhất.
+    while not frame_queue.empty():
+        try:
+            frame_queue.get_nowait()
+        except queue.Empty:
+            break
+    # ─── KẾT THÚC THÊM WARM-UP ─────────────────────────────────────────
 
     tracker = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=60, minimum_matching_threshold=0.8, frame_rate=25)
     ocr_cache = {}

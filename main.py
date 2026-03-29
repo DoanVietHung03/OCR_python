@@ -79,70 +79,42 @@ def camera_producer(cam_id, video_path, frame_queue, stop_event):
         
     cap.release()
 
-def ai_consumer(q1, q2, display_queue, stop_event):
+def ai_consumer(cam_name, frame_queue, display_queue, stop_event):
     vehicle_session, plate_session, parseq_session = load_models()
     vehicle_in,  vehicle_out  = [i.name for i in vehicle_session.get_inputs()],  [o.name for o in vehicle_session.get_outputs()]
     plate_in,    plate_out    = [i.name for i in plate_session.get_inputs()],    [o.name for o in plate_session.get_outputs()]
     parseq_in,   parseq_out   = [i.name for i in parseq_session.get_inputs()],   [o.name for o in parseq_session.get_outputs()]
     allowed_vehicle_ids = list(TARGET_VEHICLES.keys())
 
-    cams = ['K1', 'K5']
-    trackers = {c: sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=60, minimum_matching_threshold=0.8, frame_rate=25) for c in cams}
-    ocr_caches = {c: {} for c in cams}
-    tracker_states = {c: {} for c in cams}
-    frame_ids = {c: 0 for c in cams}
+    tracker = sv.ByteTrack(track_activation_threshold=0.5, lost_track_buffer=60, minimum_matching_threshold=0.8, frame_rate=25)
+    ocr_cache = {}
+    tracker_state = {}
+    frame_id = 0
 
-    last_f1, last_f2 = None, None
     fps_start = time.time()
     fps_counter = 0
     current_fps = 0.0
 
     while not stop_event.is_set():
-        new_f1, new_f2 = None, None
-        try: new_f1 = q1.get_nowait()
-        except queue.Empty: pass
-        
-        try: new_f2 = q2.get_nowait()
-        except queue.Empty: pass
-
-        if new_f1 is None and new_f2 is None:
+        try: 
+            frame = frame_queue.get_nowait()
+        except queue.Empty: 
             time.sleep(0.005)
             continue
 
-        if new_f1 is not None:
-            process_single_frame(new_f1, vehicle_session, plate_session, parseq_session,
-                                 vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out,
-                                 allowed_vehicle_ids, trackers['K1'], ocr_caches['K1'], tracker_states['K1'], frame_id=frame_ids['K1'])
-            
-            cv2.putText(new_f1, f"CAM K1 | FPS: {current_fps:.1f}", (20, new_f1.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2)
-            frame_ids['K1'] += 1
-            last_f1 = new_f1
+        process_single_frame(frame, vehicle_session, plate_session, parseq_session,
+                             vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out,
+                             allowed_vehicle_ids, tracker, ocr_cache, tracker_state, frame_id=frame_id)
+        
+        cv2.putText(frame, f"CAM {cam_name} | FPS: {current_fps:.1f}", (20, frame.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2)
+        frame_id += 1
 
-        if new_f2 is not None:
-            process_single_frame(new_f2, vehicle_session, plate_session, parseq_session,
-                                 vehicle_in, vehicle_out, plate_in, plate_out, parseq_in, parseq_out,
-                                 allowed_vehicle_ids, trackers['K5'], ocr_caches['K5'], tracker_states['K5'], frame_id=frame_ids['K5'])
-            cv2.putText(new_f2, f"CAM K5 | FPS: {current_fps:.1f}", (20, new_f2.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (88, 255, 0), 2)
-            frame_ids['K5'] += 1
-            last_f2 = new_f2
-
-        # Cập nhật ảnh liên tục để web không bị giật
-        combined = None
-        if last_f1 is not None and last_f2 is not None:
-            h1, w1 = last_f1.shape[:2]
-            h2, w2 = last_f2.shape[:2]
-            f2_disp = cv2.resize(last_f2, (int(w2 * h1 / h2), h1)) if h1 != h2 else last_f2
-            combined = cv2.hconcat([last_f1, f2_disp])
-        elif last_f1 is not None: combined = last_f1
-        elif last_f2 is not None: combined = last_f2
-
-        if combined is not None:
-            # Gửi thẳng numpy array thô (nhỏ gọn) qua Queue, nhường việc encode cho Web stream
-            combined_small = cv2.resize(combined, (0, 0), fx=0.5, fy=0.5)
-            try:
-                if display_queue.full(): display_queue.get_nowait()
-                display_queue.put_nowait(combined_small)
-            except: pass
+        # Gửi tuple (Tên Camera, Frame) qua Queue để Web stream tự ghép
+        small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+        try:
+            if display_queue.full(): display_queue.get_nowait()
+            display_queue.put_nowait((cam_name, small_frame))
+        except: pass
 
         fps_counter += 1
         elapsed_fps = time.time() - fps_start
@@ -152,13 +124,34 @@ def ai_consumer(q1, q2, display_queue, stop_event):
             fps_start = time.time()
 
 def generate_web_stream(display_queue):
+    last_frames = {'K1': None, 'K5': None}
+    
     while True:
         try:
-            # Di chuyển imencode ra đây để giải phóng CPU cho luồng AI
-            frame = display_queue.get(timeout=2.0)
-            ret_encode, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
-            if ret_encode:
-                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            # Nhận tuple gồm Tên Camera và Khung hình
+            cam_name, frame = display_queue.get(timeout=2.0)
+            last_frames[cam_name] = frame
+            
+            last_f1 = last_frames['K1']
+            last_f2 = last_frames['K5']
+            combined = None
+
+            # Ghép ảnh dựa trên những frame mới nhất nhận được
+            if last_f1 is not None and last_f2 is not None:
+                h1, w1 = last_f1.shape[:2]
+                h2, w2 = last_f2.shape[:2]
+                f2_disp = cv2.resize(last_f2, (int(w2 * h1 / h2), h1)) if h1 != h2 else last_f2
+                combined = cv2.hconcat([last_f1, f2_disp])
+            elif last_f1 is not None: 
+                combined = last_f1
+            elif last_f2 is not None: 
+                combined = last_f2
+
+            if combined is not None:
+                ret_encode, buffer = cv2.imencode('.jpg', combined, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                if ret_encode:
+                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                    
         except queue.Empty:
             time.sleep(0.05)
 
@@ -243,7 +236,7 @@ if __name__ == "__main__":
     mp.set_start_method('spawn', force=True)
     q_cam1 = mp.Queue(maxsize=2)
     q_cam2 = mp.Queue(maxsize=2)
-    display_q = mp.Queue(maxsize=2)
+    display_q = mp.Queue(maxsize=4)
     
     app.config['DISPLAY_Q'] = display_q
     stop_event = mp.Event()
@@ -253,8 +246,10 @@ if __name__ == "__main__":
     p_cam1.start()
     p_cam2.start()
 
-    p_ai = mp.Process(target=ai_consumer, args=(q_cam1, q_cam2, display_q, stop_event))
-    p_ai.start()
+    p_ai_1 = mp.Process(target=ai_consumer, args=('K1', q_cam1, display_q, stop_event))
+    p_ai_2 = mp.Process(target=ai_consumer, args=('K5', q_cam2, display_q, stop_event))
+    p_ai_1.start()
+    p_ai_2.start()
 
     try:
         app.run(host='0.0.0.0', port=5050, debug=False, threaded=True, use_reloader=False)
@@ -264,7 +259,9 @@ if __name__ == "__main__":
         stop_event.set()
         p_cam1.join(timeout=2.0)
         p_cam2.join(timeout=2.0)
-        p_ai.join(timeout=3.0)
+        p_ai_1.join(timeout=3.0)
+        p_ai_2.join(timeout=3.0)
         if p_cam1.is_alive(): p_cam1.terminate()
         if p_cam2.is_alive(): p_cam2.terminate()
-        if p_ai.is_alive(): p_ai.terminate()
+        if p_ai_1.is_alive(): p_ai_1.terminate()
+        if p_ai_2.is_alive(): p_ai_2.terminate()

@@ -93,7 +93,15 @@ def process_single_frame(img_bgr,
     tracked_detections = tracker.update_with_detections(detections)
     active_track_ids   = set()
     draw_list          = []
+    
+    # Lưu lại thông tin xe cho Bước 4 (tránh phải tính toán lại x,y,w,h)
+    tracked_vehicles_info = []
+    
+    # Các biến phục vụ BATCHING PARSEQ
+    ocr_requests = []
+    parseq_blobs = []
 
+    # ── BƯỚC 3.1: PHA THU THẬP & CHUẨN BỊ BATCH OCR ─────────────────────────
     for i in range(len(tracked_detections)):
         xyxy     = tracked_detections.xyxy[i]
         track_id = tracked_detections.tracker_id[i]
@@ -106,6 +114,8 @@ def process_single_frame(img_bgr,
         h = min(img_bgr.shape[0] - y, y2 - y1)
 
         if w < 60 or h < 60: continue
+        
+        tracked_vehicles_info.append({'track_id': track_id, 'box': (x, y, w, h)})
 
         if track_id not in ocr_cache:
             ocr_cache[track_id] = OCRResult("", 0.0, 0)
@@ -116,7 +126,6 @@ def process_single_frame(img_bgr,
 
         vehicle_conf = float(tracked_detections.confidence[i]) if tracked_detections.confidence is not None else 0.0
 
-        # ── BƯỚC 3: OCR ──────────────────────────────────────────────────────
         already_confident = (ocr_cache[track_id].confidence >= 0.70 and
                              ocr_cache[track_id].update_count >= 2)
         needs_ocr = (frame_id % OCR_INTERVAL == 0) and not already_confident
@@ -133,73 +142,101 @@ def process_single_frame(img_bgr,
                 
                 if plates:
                     plates = sorted(plates, key=lambda p: p.score, reverse=True)[:1]
-
-                best_plate_conf = 0.0
-                best_text       = ""
-                best_plate_img  = None
-
-                for p_det in plates:
+                    p_det = plates[0]
+                    
                     p_x, p_y, p_w, p_h = p_det.box
-                    plate_conf = p_det.score
-
                     abs_x, abs_y = p_x + roi_x1, p_y + roi_y1
-                    if abs_y > img_bgr.shape[0] * 0.9: continue
+                    
+                    if abs_y <= img_bgr.shape[0] * 0.9:
+                        img_plate_raw = img_bgr[abs_y:abs_y+p_h, abs_x:abs_x+p_w]
+                        if img_plate_raw.size > 0:
+                            raw_ratio = img_plate_raw.shape[1] / (img_plate_raw.shape[0] + 1e-6)
+                            if 0.3 <= raw_ratio <= 5.0:
+                                img_plate = enhance_plate_quality(img_plate_raw)
+                                if img_plate.shape[0] / (img_plate.shape[1] + 1e-6) >= 1.5:
+                                    img_plate = cv2.rotate(img_plate, cv2.ROTATE_90_CLOCKWISE)
 
-                    img_plate_raw = img_bgr[abs_y:abs_y+p_h, abs_x:abs_x+p_w]
-                    if img_plate_raw.size == 0: continue
+                                ratio = img_plate.shape[1] / (img_plate.shape[0] + 1e-6)
 
-                    raw_ratio = img_plate_raw.shape[1] / (img_plate_raw.shape[0] + 1e-6)
-                    if raw_ratio < 0.3 or raw_ratio > 5.0: continue
+                                if ratio > 2.2:
+                                    blob = preprocess_and_normalize_ocr(img_plate)
+                                    parseq_blobs.append(blob)
+                                    ocr_requests.append({
+                                        'track_id': track_id, 'type': 'single',
+                                        'vehicle_conf': vehicle_conf, 'plate_conf': p_det.score,
+                                        'img_plate_raw': img_plate_raw.copy(),
+                                        'idx': len(parseq_blobs) - 1
+                                    })
+                                else:
+                                    h_p, w_p = img_plate.shape[:2]
+                                    img_top  = img_plate[0:int(h_p*0.60), :]
+                                    img_bot  = img_plate[int(h_p*0.40):,  :]
+                                    b_top    = preprocess_and_normalize_ocr(img_top)
+                                    b_bot    = preprocess_and_normalize_ocr(img_bot)
+                                    
+                                    parseq_blobs.extend([b_top, b_bot])
+                                    ocr_requests.append({
+                                        'track_id': track_id, 'type': 'double',
+                                        'vehicle_conf': vehicle_conf, 'plate_conf': p_det.score,
+                                        'img_plate_raw': img_plate_raw.copy(),
+                                        'idx_top': len(parseq_blobs) - 2,
+                                        'idx_bot': len(parseq_blobs) - 1
+                                    })
 
-                    img_plate = enhance_plate_quality(img_plate_raw)
-                    if img_plate.shape[0] / (img_plate.shape[1] + 1e-6) >= 1.5:
-                        img_plate = cv2.rotate(img_plate, cv2.ROTATE_90_CLOCKWISE)
+    # ── BƯỚC 3.2: THỰC THI BATCH PARSEQ & GIẢI MÃ ───────────────────────────
+    if parseq_blobs:
+        # Gom tất cả blobs thành 1 tensor duy nhất có shape (N, 3, 32, 128)
+        batch_input = np.concatenate(parseq_blobs, axis=0)
+        
+        # Đẩy qua GPU ĐÚNG 1 LẦN cho toàn bộ batch
+        batched_logits = parseq_session.run(parseq_out, {parseq_in[0]: batch_input})[0]
+        
+        for req in ocr_requests:
+            track_id = req['track_id']
+            current_text = ""
+            ocr_conf = 0.0
+            
+            if req['type'] == 'single':
+                logits = batched_logits[req['idx']]
+                current_text, ocr_conf = decode_parseq(logits, logits.shape[0], logits.shape[1])
+                current_text = clean_plate_text(current_text)
+                
+                holistic_score = (req['vehicle_conf'] * WEIGHT_VEHICLE +
+                                  req['plate_conf']   * WEIGHT_PLATE   +
+                                  ocr_conf            * WEIGHT_OCR)
+                if len(current_text) < 6: holistic_score *= 0.50
+                
+            elif req['type'] == 'double':
+                l_top = batched_logits[req['idx_top']]
+                l_bot = batched_logits[req['idx_bot']]
+                
+                t_top, c_top = decode_parseq(l_top, l_top.shape[0], l_top.shape[1])
+                t_bot, c_bot = decode_parseq(l_bot, l_bot.shape[0], l_bot.shape[1])
+                
+                current_text = f"{clean_top_line(t_top)} {clean_bottom_line(t_bot)}".strip()
+                ocr_conf     = (c_top + c_bot) / 2.0
+                
+                holistic_score = (req['vehicle_conf'] * WEIGHT_VEHICLE +
+                                  req['plate_conf']   * WEIGHT_PLATE   +
+                                  ocr_conf            * WEIGHT_OCR)
+                if not re.match(r"^\d{2}-[A-Z]\d \d{3}\.\d{2}$", current_text):
+                    holistic_score *= 0.70
 
-                    ratio        = img_plate.shape[1] / (img_plate.shape[0] + 1e-6)
-                    current_text = ""
-                    ocr_conf     = 0.0
+            # Cập nhật cache nếu điểm cao hơn
+            if holistic_score > ocr_cache[track_id].confidence:
+                ocr_cache[track_id].text         = current_text
+                ocr_cache[track_id].confidence   = holistic_score
+                ocr_cache[track_id].update_count += 1
+                ocr_cache[track_id].plate_crop   = req['img_plate_raw']
 
-                    if ratio > 2.2:
-                        blob   = preprocess_and_normalize_ocr(img_plate)
-                        logits = parseq_session.run(parseq_out, {parseq_in[0]: blob})[0][0]
-                        current_text, ocr_conf = decode_parseq(logits, logits.shape[0], logits.shape[1])
-                        current_text = clean_plate_text(current_text)
-                    else:
-                        h_p, w_p = img_plate.shape[:2]
-                        img_top  = img_plate[0:int(h_p*0.60), :]
-                        img_bot  = img_plate[int(h_p*0.40):,  :]
-                        b_top    = preprocess_and_normalize_ocr(img_top)
-                        b_bot    = preprocess_and_normalize_ocr(img_bot)
-                        l_top    = parseq_session.run(parseq_out, {parseq_in[0]: b_top})[0][0]
-                        l_bot    = parseq_session.run(parseq_out, {parseq_in[0]: b_bot})[0][0]
-                        t_top, c_top = decode_parseq(l_top, l_top.shape[0], l_top.shape[1])
-                        t_bot, c_bot = decode_parseq(l_bot, l_bot.shape[0], l_bot.shape[1])
-                        current_text = f"{clean_top_line(t_top)} {clean_bottom_line(t_bot)}".strip()
-                        ocr_conf     = (c_top + c_bot) / 2.0
-
-                    holistic_score = (vehicle_conf * WEIGHT_VEHICLE +
-                                      plate_conf   * WEIGHT_PLATE   +
-                                      ocr_conf     * WEIGHT_OCR)
-
-                    if ratio > 2.2:
-                        if len(current_text) < 6: holistic_score *= 0.50
-                    else:
-                        if not re.match(r"^\d{2}-[A-Z]\d \d{3}\.\d{2}$", current_text):
-                            holistic_score *= 0.70
-
-                    if holistic_score > best_plate_conf:
-                        best_plate_conf = holistic_score
-                        best_text       = current_text
-                        best_plate_img  = img_plate_raw.copy()
-
-                if best_text and best_plate_conf > ocr_cache[track_id].confidence:
-                    ocr_cache[track_id].text         = best_text
-                    ocr_cache[track_id].confidence   = best_plate_conf
-                    ocr_cache[track_id].update_count += 1
-                    ocr_cache[track_id].plate_crop   = best_plate_img
-
-        # ── BƯỚC 4: Log & hiển thị (Đã chuyển sang dùng Queue) ───────────────────
-        res          = ocr_cache[track_id]
+    # ── BƯỚC 4 & 6: LOGGING & VẼ BOUNDING BOX ────────────────────────────────
+    for info in tracked_vehicles_info:
+        track_id = info['track_id']
+        x, y, w, h = info['box']
+        
+        res = ocr_cache.get(track_id)
+        if not res: continue
+        
         display_text = res.text if res.confidence >= 0.65 else ""
 
         if display_text and not res.is_logged:
@@ -213,8 +250,6 @@ def process_single_frame(img_bgr,
                 veh_name = f"VEH_{res.text}_ID{track_id}_{f_ts}.jpg"
                 pla_name = f"PLA_{res.text}_ID{track_id}_{f_ts}.jpg" if (plate_crop is not None and plate_crop.size > 0) else ""
 
-                # Chú ý: Bắt buộc dùng .copy() khi ném ảnh vào Queue để luồng I/O
-                # không bị mất dữ liệu khi img_bgr bị thay đổi ở vòng lặp tiếp theo.
                 log_queue.put((
                     vehicle_crop.copy(),
                     plate_crop.copy() if (plate_crop is not None and plate_crop.size > 0) else None,
@@ -230,14 +265,14 @@ def process_single_frame(img_bgr,
 
         draw_list.append(((x, y, w, h), track_id, display_text))
 
-    # ── BƯỚC 5: Xóa cache ────────────────────────────────────────────────────
+    # ── BƯỚC 5: XÓA CACHE ────────────────────────────────────────────────────
     for tid in list(ocr_cache.keys()):
         if tid not in active_track_ids:
             ocr_cache[tid].absent_frames = getattr(ocr_cache[tid], 'absent_frames', 0) + 1
             if ocr_cache[tid].absent_frames > STALE_GRACE_FRAMES:
                 del ocr_cache[tid]
 
-    # ── BƯỚC 6: Vẽ bounding box ──────────────────────────────────────────────
+    # Thực hiện vẽ
     for box, tid, txt in draw_list:
         dx, dy, dw, dh = box
         cv2.rectangle(img_bgr, (dx, dy), (dx+dw, dy+dh), (0, 255, 0), 2)

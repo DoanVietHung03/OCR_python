@@ -7,6 +7,8 @@ import csv
 import time
 from datetime import datetime
 import re
+import threading # <- Thêm thư viện threading
+import queue     # <- Thêm thư viện queue
 
 from config import OCRResult, WEIGHT_VEHICLE, WEIGHT_PLATE, WEIGHT_OCR
 from utils import (enhance_plate_quality, preprocess_and_normalize_ocr,
@@ -26,6 +28,35 @@ if not os.path.exists(CSV_FILE):
 VEHICLE_DETECT_INTERVAL = 1   
 OCR_INTERVAL            = 5   
 STALE_GRACE_FRAMES      = 15  
+
+# ─── THÊM HÀNG ĐỢI VÀ LUỒNG I/O CHẠY NGẦM (ASYNC LOGGING) ────────────────────
+log_queue = queue.Queue()
+
+def async_logger_worker():
+    while True:
+        item = log_queue.get()
+        if item is None: break
+        try:
+            veh_crop, pla_crop, t_str, track_id, text, conf_str, veh_name, pla_name = item
+            
+            # Ghi ảnh xe xuống ổ cứng
+            cv2.imwrite(os.path.join(IMG_DIR, veh_name), veh_crop)
+            
+            # Ghi ảnh biển số xuống ổ cứng (nếu có)
+            if pla_crop is not None and pla_crop.size > 0:
+                cv2.imwrite(os.path.join(IMG_DIR, pla_name), pla_crop)
+                
+            # Ghi vào CSV
+            with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([t_str, track_id, text, conf_str, veh_name, pla_name])
+        except Exception as e:
+            print(f"[I/O Logger Error] {e}")
+        finally:
+            log_queue.task_done()
+
+# Khởi chạy luồng I/O ngay khi import (Daemon=True để luồng tự tắt khi app tắt)
+threading.Thread(target=async_logger_worker, daemon=True).start()
+# ─────────────────────────────────────────────────────────────────────────────
 
 def process_single_frame(img_bgr,
                          vehicle_session, plate_session, parseq_session,
@@ -86,7 +117,6 @@ def process_single_frame(img_bgr,
         vehicle_conf = float(tracked_detections.confidence[i]) if tracked_detections.confidence is not None else 0.0
 
         # ── BƯỚC 3: OCR ──────────────────────────────────────────────────────
-        # TỐI ƯU 3: Giảm update_count xuống 2 để không bắt hệ thống chạy OCR vô ích khi đã có kết quả tốt
         already_confident = (ocr_cache[track_id].confidence >= 0.70 and
                              ocr_cache[track_id].update_count >= 2)
         needs_ocr = (frame_id % OCR_INTERVAL == 0) and not already_confident
@@ -101,7 +131,6 @@ def process_single_frame(img_bgr,
             if vehicle_roi.size > 0:
                 plates = infer_yolo(plate_session, plate_in, plate_out, vehicle_roi, 0.4)
                 
-                # TỐI ƯU 4: Chỉ lấy 1 bounding box biển số có score cao nhất, bỏ qua các box nhiễu
                 if plates:
                     plates = sorted(plates, key=lambda p: p.score, reverse=True)[:1]
 
@@ -169,7 +198,7 @@ def process_single_frame(img_bgr,
                     ocr_cache[track_id].update_count += 1
                     ocr_cache[track_id].plate_crop   = best_plate_img
 
-        # ── BƯỚC 4: Log & hiển thị ───────────────────────────────────────────
+        # ── BƯỚC 4: Log & hiển thị (Đã chuyển sang dùng Queue) ───────────────────
         res          = ocr_cache[track_id]
         display_text = res.text if res.confidence >= 0.65 else ""
 
@@ -182,17 +211,21 @@ def process_single_frame(img_bgr,
                 t_str    = now.strftime("%H:%M:%S %d/%m/%Y")
                 f_ts     = now.strftime("%H%M%S")
                 veh_name = f"VEH_{res.text}_ID{track_id}_{f_ts}.jpg"
-                pla_name = f"PLA_{res.text}_ID{track_id}_{f_ts}.jpg"
+                pla_name = f"PLA_{res.text}_ID{track_id}_{f_ts}.jpg" if (plate_crop is not None and plate_crop.size > 0) else ""
 
-                cv2.imwrite(os.path.join(IMG_DIR, veh_name), vehicle_crop)
-                if plate_crop is not None and plate_crop.size > 0:
-                    cv2.imwrite(os.path.join(IMG_DIR, pla_name), plate_crop)
-                else:
-                    pla_name = ""
+                # Chú ý: Bắt buộc dùng .copy() khi ném ảnh vào Queue để luồng I/O
+                # không bị mất dữ liệu khi img_bgr bị thay đổi ở vòng lặp tiếp theo.
+                log_queue.put((
+                    vehicle_crop.copy(),
+                    plate_crop.copy() if (plate_crop is not None and plate_crop.size > 0) else None,
+                    t_str,
+                    track_id,
+                    res.text,
+                    f"{res.confidence:.2f}",
+                    veh_name,
+                    pla_name
+                ))
 
-                with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
-                    csv.writer(f).writerow([t_str, track_id, res.text,
-                                            f"{res.confidence:.2f}", veh_name, pla_name])
                 res.is_logged = True
 
         draw_list.append(((x, y, w, h), track_id, display_text))

@@ -64,23 +64,39 @@ def load_models():
            ort.InferenceSession("weights/yolov9_detect_plate.onnx", sess_options, providers=providers), \
            ort.InferenceSession("weights/parseq.onnx", sess_options, providers=providers)
 
-def camera_producer(cam_id, video_path, frame_queue, stop_event):
-    cap = cv2.VideoCapture(video_path)
+def camera_producer(cam_name, rtsp_url, frame_queue, stop_event):
+    # Khởi tạo VideoCapture với backend FFmpeg (CAP_FFMPEG)
+    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    
+    # Ép OpenCV giảm buffer size xuống mức tối thiểu để tránh tích tụ delay
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     while not stop_event.is_set():
-        ret, frame = cap.read()
+        # Dùng grab() và retrieve() thay vì read() để tăng tốc độ bỏ qua frame
+        ret = cap.grab()
         if not ret:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            print(f"[{cam_name}] Mất kết nối RTSP, đang thử kết nối lại...")
+            cap.release()
+            time.sleep(2)
+            cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             continue
             
+        ret, frame = cap.retrieve()
+        if not ret:
+            continue
+
         try:
-            if frame_queue.full(): frame_queue.get_nowait()
+            # Nếu queue đầy (AI đang bận), rút frame cũ nhất ra vứt đi
+            if frame_queue.full(): 
+                frame_queue.get_nowait()
+            
+            # Đẩy frame mới nhất vào
             frame_queue.put_nowait(frame)
-        except queue.Empty: pass
-        except queue.Full: pass
-        
-        time.sleep(0.005)
+        except queue.Empty: 
+            pass
+        except queue.Full: 
+            pass
         
     cap.release()
 
@@ -264,6 +280,9 @@ def view_history():
     return render_template_string(html, events=events)
 
 if __name__ == "__main__":
+    rtsp_cam1 = "rtsp://localhost:8554/cong_K1"
+    rtsp_cam2 = "rtsp://localhost:8554/cong_K5"
+
     mp.set_start_method('spawn', force=True)
     q_cam1 = mp.Queue(maxsize=2)
     q_cam2 = mp.Queue(maxsize=2)
@@ -272,8 +291,8 @@ if __name__ == "__main__":
     app.config['DISPLAY_Q'] = display_q
     stop_event = mp.Event()
 
-    p_cam1 = mp.Process(target=camera_producer, args=('K1', "CCTV/cong_K1.mp4", q_cam1, stop_event))
-    p_cam2 = mp.Process(target=camera_producer, args=('K5', "CCTV/cong_K5.mp4", q_cam2, stop_event))
+    p_cam1 = mp.Process(target=camera_producer, args=('K1', rtsp_cam1, q_cam1, stop_event))
+    p_cam2 = mp.Process(target=camera_producer, args=('K5', rtsp_cam2, q_cam2, stop_event))
     p_cam1.start()
     p_cam2.start()
 

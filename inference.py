@@ -116,8 +116,7 @@ def infer_yolo(session, input_names, output_names, img, conf_thresh=0.5, allowed
 
 def decode_parseq(logits_data, seq_len, num_classes):
     result = ""
-    total_conf = 0.0
-    valid_chars = 0
+    confidences = []
 
     for i in range(seq_len):
         logits_step = logits_data[i]
@@ -132,8 +131,14 @@ def decode_parseq(logits_data, seq_len, num_classes):
 
         if 0 < max_idx <= len(CHARSET):
             result += CHARSET[max_idx - 1]
-            total_conf += char_confidence
-            valid_chars += 1
+            confidences.append(char_confidence)
 
-    out_confidence = (total_conf / valid_chars) if valid_chars > 0 else 0.0
+    if not confidences:
+        return "", 0.0
+
+    avg_conf = sum(confidences) / len(confidences)
+    min_conf = min(confidences)
+
+    out_confidence = (avg_conf * 0.6) + (min_conf * 0.4)
+    
     return result, out_confidence

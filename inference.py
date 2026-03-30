@@ -139,6 +139,6 @@ def decode_parseq(logits_data, seq_len, num_classes):
     avg_conf = sum(confidences) / len(confidences)
     min_conf = min(confidences)
 
-    out_confidence = (avg_conf * 0.6) + (min_conf * 0.4)
+    out_confidence = (avg_conf * 0.4) + (min_conf * 0.6)
     
     return result, out_confidence

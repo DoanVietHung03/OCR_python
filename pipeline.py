@@ -10,7 +10,7 @@ import re
 import threading # <- Thêm thư viện threading
 import queue     # <- Thêm thư viện queue
 
-from config import OCRResult, WEIGHT_VEHICLE, WEIGHT_PLATE, WEIGHT_OCR
+from config import OCRResult, WEIGHT_PLATE, WEIGHT_OCR
 from utils import (enhance_plate_quality, preprocess_and_normalize_ocr,
                    clean_plate_text, clean_top_line, clean_bottom_line)
 from inference import infer_yolo, decode_parseq
@@ -201,11 +201,12 @@ def process_single_frame(img_bgr,
                 current_text, ocr_conf = decode_parseq(logits, logits.shape[0], logits.shape[1])
                 current_text = clean_plate_text(current_text)
                 
-                holistic_score = (req['vehicle_conf'] * WEIGHT_VEHICLE +
-                                  req['plate_conf']   * WEIGHT_PLATE   +
-                                  ocr_conf            * WEIGHT_OCR)
+                holistic_score = (req['plate_conf']   * WEIGHT_PLATE   + ocr_conf            * WEIGHT_OCR)                             
                 if len(current_text) < 6: holistic_score *= 0.50
-                
+                if current_text == ocr_cache[track_id].text:
+                    # Nếu text giống frame trước, thưởng thêm 5% điểm tin cậy cho mỗi lần lặp (tối đa không quá 1.0)
+                    bonus = min(0.15, ocr_cache[track_id].update_count * 0.05)
+                    holistic_score = min(1.0, holistic_score + bonus)
             elif req['type'] == 'double':
                 l_top = batched_logits[req['idx_top']]
                 l_bot = batched_logits[req['idx_bot']]
@@ -214,14 +215,17 @@ def process_single_frame(img_bgr,
                 t_bot, c_bot = decode_parseq(l_bot, l_bot.shape[0], l_bot.shape[1])
                 
                 current_text = f"{clean_top_line(t_top)} {clean_bottom_line(t_bot)}".strip()
-                ocr_conf     = (c_top + c_bot) / 2.0
+                ocr_conf = (c_top + c_bot) / 2.0
                 
-                holistic_score = (req['vehicle_conf'] * WEIGHT_VEHICLE +
-                                  req['plate_conf']   * WEIGHT_PLATE   +
-                                  ocr_conf            * WEIGHT_OCR)
+                holistic_score = (req['plate_conf'] * WEIGHT_PLATE + ocr_conf * WEIGHT_OCR)
                 if not re.match(r"^\d{2}-[A-Z][A-Z0-9] \d{3}\.\d{2}$", current_text):
                     holistic_score *= 0.70
 
+                if current_text == ocr_cache[track_id].text:
+                    # Nếu text giống frame trước, thưởng thêm 5% điểm tin cậy cho mỗi lần lặp (tối đa không quá 1.0)
+                    bonus = min(0.15, ocr_cache[track_id].update_count * 0.05)
+                    holistic_score = min(1.0, holistic_score + bonus)
+                    
             # Cập nhật cache nếu điểm cao hơn
             if holistic_score > ocr_cache[track_id].confidence:
                 ocr_cache[track_id].text         = current_text

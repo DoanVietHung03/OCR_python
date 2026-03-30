@@ -6,10 +6,12 @@ def clean_plate_text(input_str):
     return "".join([c.upper() for c in input_str if c.isalnum()])
 
 def clean_bottom_line(input_str):
-    output = "".join([c for c in input_str if c.isdigit()])[:5]
-    if len(output) == 5:
-        return f"{output[:3]}.{output[3:]}"
-    return output
+    output = "".join([c for c in input_str if c.isdigit()])
+    if len(output) >= 5: # Biển 5 số (có thể có nhiễu dư phía sau)
+        return f"{output[:3]}.{output[3:5]}"
+    elif len(output) == 4: # Biển 4 số đời cũ
+        return output
+    return output # Trả về nguyên gốc nếu không xác định được
 
 def clean_top_line(input_str):
     output = clean_plate_text(input_str)[:4]  

@@ -11,7 +11,7 @@ import threading # <- Thêm thư viện threading
 import queue     # <- Thêm thư viện queue
 
 from config import OCRResult, WEIGHT_PLATE, WEIGHT_OCR
-from utils import (enhance_plate_quality, preprocess_and_normalize_ocr,
+from utils import (enhance_plate_quality, calculate_blur_score, preprocess_and_normalize_ocr,
                    clean_plate_text, clean_top_line, clean_bottom_line)
 from inference import infer_yolo, decode_parseq
 
@@ -150,6 +150,7 @@ def process_single_frame(img_bgr,
                     if abs_y <= img_bgr.shape[0] * 0.9:
                         img_plate_raw = img_bgr[abs_y:abs_y+p_h, abs_x:abs_x+p_w]
                         if img_plate_raw.size > 0:
+                            blur_score = calculate_blur_score(img_plate_raw)
                             raw_ratio = img_plate_raw.shape[1] / (img_plate_raw.shape[0] + 1e-6)
                             if 0.3 <= raw_ratio <= 5.0:
                                 img_plate = enhance_plate_quality(img_plate_raw)
@@ -165,6 +166,7 @@ def process_single_frame(img_bgr,
                                         'track_id': track_id, 'type': 'single',
                                         'vehicle_conf': vehicle_conf, 'plate_conf': p_det.score,
                                         'img_plate_raw': img_plate_raw.copy(),
+                                        'blur_score': blur_score,
                                         'idx': len(parseq_blobs) - 1
                                     })
                                 else:
@@ -179,6 +181,7 @@ def process_single_frame(img_bgr,
                                         'track_id': track_id, 'type': 'double',
                                         'vehicle_conf': vehicle_conf, 'plate_conf': p_det.score,
                                         'img_plate_raw': img_plate_raw.copy(),
+                                        'blur_score': blur_score,
                                         'idx_top': len(parseq_blobs) - 2,
                                         'idx_bot': len(parseq_blobs) - 1
                                     })
@@ -226,6 +229,14 @@ def process_single_frame(img_bgr,
                     bonus = min(0.05, ocr_cache[track_id].update_count * 0.02)
                     holistic_score = min(1.0, holistic_score + bonus)
                     
+            blur = req['blur_score']
+            if blur < 80:
+                holistic_score *= 0.80  # Mờ nặng (như ảnh 94-AE của bạn) -> Ép giảm 20% tổng điểm
+            elif blur < 200:
+                holistic_score *= 0.88  # Hơi nhòe -> Ép giảm 12%
+            elif blur < 400:
+                holistic_score *= 0.95  # Ở mức trung bình -> Ép giảm nhẹ 5%
+                
             # Cập nhật cache nếu điểm cao hơn
             if holistic_score > ocr_cache[track_id].confidence:
                 ocr_cache[track_id].text         = current_text

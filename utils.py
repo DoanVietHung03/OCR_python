@@ -54,6 +54,17 @@ def enhance_plate_quality(src):
     
     return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
 
+def calculate_blur_score(img):
+    """
+    Tính toán độ mờ của ảnh bằng Laplacian Variance.
+    Điểm càng cao -> Ảnh càng nét.
+    Điểm càng thấp -> Ảnh càng mờ/nhòe.
+    """
+    if img is None or img.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
+
 def letterbox_yolo(source, expected_width, expected_height):
     h, w = source.shape[:2]
     ratio = min(expected_height / h, expected_width / w)

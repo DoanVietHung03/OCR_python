@@ -14,7 +14,7 @@ from pipeline import process_single_frame
 
 app = Flask(__name__, static_folder="event_logs/images", static_url_path="/images")
 
-# GIỮ NGUYÊN BẢN HTML GỐC CỦA BẠN
+
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -81,7 +81,6 @@ def camera_producer(cam_name, rtsp_url, frame_queue, stop_event):
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     while not stop_event.is_set():
-        # Dùng grab() và retrieve() thay vì read() để tăng tốc độ bỏ qua frame
         ret = cap.grab()
         if not ret:
             print(f"[{cam_name}] Mất kết nối RTSP, đang thử kết nối lại...")
@@ -96,7 +95,7 @@ def camera_producer(cam_name, rtsp_url, frame_queue, stop_event):
             continue
 
         try:
-            # Nếu queue đầy (AI đang bận), rút frame cũ nhất ra vứt đi
+            # Nếu queue đầy, rút frame cũ nhất ra vứt đi
             if frame_queue.full():
                 frame_queue.get_nowait()
 
@@ -123,7 +122,7 @@ def ai_consumer(cam_name, frame_queue, display_queue, stop_event):
     ]
     allowed_vehicle_ids = list(TARGET_VEHICLES.keys())
 
-    # ─── BẮT ĐẦU THÊM WARM-UP ──────────────────────────────────────────
+    # ─── BẮT ĐẦU WARM-UP ──────────────────────────────────────────
     print(f"[{cam_name}] Đang tiến hành Warm-up các model AI (sẽ mất khoảng 10-15s)...")
 
     # Kích thước đầu vào mặc định của YOLO là 640x640, PARSeq là 32x128
@@ -140,8 +139,7 @@ def ai_consumer(cam_name, frame_queue, display_queue, stop_event):
     print(f"[{cam_name}] Warm-up hoàn tất! Đã sẵn sàng xử lý luồng Video.")
 
     # XÓA RÁC TRONG QUEUE:
-    # Trong lúc warm-up 15s, producer camera vẫn đẩy ảnh vào queue gây nghẽn.
-    # Ta cần xả hết ảnh cũ để bắt đầu với ảnh realtime mới nhất.
+    # Trong lúc warm-up 15s, producer camera vẫn đẩy ảnh vào queue gây nghẽn. Cần xả hết ảnh cũ để bắt đầu với ảnh realtime mới nhất.
     while not frame_queue.empty():
         try:
             frame_queue.get_nowait()
@@ -272,7 +270,6 @@ def video_feed():
     )
 
 
-# GIỮ NGUYÊN BẢN HISTORY GỐC CÓ CHỨC NĂNG ZOOM (HOVER) CỦA BẠN
 @app.route("/history")
 def view_history():
     events = []

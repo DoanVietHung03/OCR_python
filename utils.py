@@ -1,4 +1,3 @@
-# utils.py
 import cv2
 import numpy as np
 
@@ -40,10 +39,10 @@ def enhance_plate_quality(src):
     if src is None or src.size == 0:
         return src
 
-    # TỐI ƯU 1: Lọc nhiễu TRƯỚC khi phóng to giúp tiết kiệm 70% CPU time cho hàm này
+    # Lọc nhiễu TRƯỚC khi phóng to giúp tiết kiệm 70% CPU time cho hàm này
     dst = cv2.bilateralFilter(src, d=5, sigmaColor=25, sigmaSpace=25)
 
-    # TỐI ƯU 2: Phóng to ảnh sau khi đã lọc nhiễu
+    # Phóng to ảnh sau khi đã lọc nhiễu
     dst = cv2.resize(dst, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
 
     lab = cv2.cvtColor(dst, cv2.COLOR_BGR2LAB)

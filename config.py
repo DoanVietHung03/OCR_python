@@ -1,4 +1,3 @@
-# config.py
 CHARSET = r"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"
 TARGET_VEHICLES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 

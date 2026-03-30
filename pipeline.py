@@ -1,4 +1,3 @@
-# pipeline.py
 import cv2
 import numpy as np
 import supervision as sv
@@ -7,8 +6,8 @@ import csv
 import time
 from datetime import datetime
 import re
-import threading  # <- Thêm thư viện threading
-import queue  # <- Thêm thư viện queue
+import threading  
+import queue 
 
 from config import OCRResult, WEIGHT_PLATE, WEIGHT_OCR
 from utils import (
@@ -305,7 +304,7 @@ def process_single_frame(
             blur = req["blur_score"]
             if blur < 80:
                 holistic_score *= (
-                    0.80  # Mờ nặng (như ảnh 94-AE của bạn) -> Ép giảm 20% tổng điểm
+                    0.80  # Mờ nặng -> Ép giảm 20% tổng điểm
                 )
             elif blur < 200:
                 holistic_score *= 0.88  # Hơi nhòe -> Ép giảm 12%

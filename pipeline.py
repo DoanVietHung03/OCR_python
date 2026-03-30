@@ -219,7 +219,7 @@ def process_single_frame(img_bgr,
                 holistic_score = (req['vehicle_conf'] * WEIGHT_VEHICLE +
                                   req['plate_conf']   * WEIGHT_PLATE   +
                                   ocr_conf            * WEIGHT_OCR)
-                if not re.match(r"^\d{2}-[A-Z]\d \d{3}\.\d{2}$", current_text):
+                if not re.match(r"^\d{2}-[A-Z][A-Z0-9] \d{3}\.\d{2}$", current_text):
                     holistic_score *= 0.70
 
             # Cập nhật cache nếu điểm cao hơn

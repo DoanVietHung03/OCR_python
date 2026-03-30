@@ -65,7 +65,7 @@ def load_models():
         "CPUExecutionProvider",
     ]
     return (
-        ort.InferenceSession("weights/yolo11s_fp16.onnx", sess_options, providers=providers),
+        ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers),
         ort.InferenceSession(
             "weights/yolov9_detect_plate_fp16.onnx", sess_options, providers=providers
         ),

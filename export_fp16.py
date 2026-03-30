@@ -9,7 +9,11 @@ def convert_to_fp16(input_path, output_path):
         model_fp32 = onnx.load(input_path)
         
         # 2. Ép kiểu toàn bộ weights/nodes sang FP16
-        model_fp16 = float16.convert_float_to_float16(model_fp32, op_block_list=['Resize', 'Cast'])
+        model_fp16 = float16.convert_float_to_float16(
+            model_fp32, 
+            op_block_list=['Resize', 'Cast'],
+            disable_shape_infer=True
+        )
         
         # 3. Lưu file mới
         onnx.save(model_fp16, output_path)
@@ -20,7 +24,6 @@ def convert_to_fp16(input_path, output_path):
 if __name__ == "__main__":
     # Danh sách các model hiện tại trong thư mục weights của bạn
     models_to_convert = [
-        ("weights/yolo11s.onnx", "weights/yolo11s_fp16.onnx"),
         ("weights/yolov9_detect_plate.onnx", "weights/yolov9_detect_plate_fp16.onnx"),
         ("weights/parseq.onnx", "weights/parseq_fp16.onnx")
     ]

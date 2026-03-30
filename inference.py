@@ -4,16 +4,29 @@ import numpy as np
 from config import Detection, CHARSET
 from utils import letterbox_yolo
 
-def infer_yolo(session, input_names, output_names, img, conf_thresh=0.5, allowed_classes=None):
+
+def infer_yolo(
+    session, input_names, output_names, img, conf_thresh=0.5, allowed_classes=None
+):
     if allowed_classes is None:
         allowed_classes = []
 
     input_shape = session.get_inputs()[0].shape
-    input_h = input_shape[2] if len(input_shape) >= 4 and isinstance(input_shape[2], int) else 640
-    input_w = input_shape[3] if len(input_shape) >= 4 and isinstance(input_shape[3], int) else 640
+    input_h = (
+        input_shape[2]
+        if len(input_shape) >= 4 and isinstance(input_shape[2], int)
+        else 640
+    )
+    input_w = (
+        input_shape[3]
+        if len(input_shape) >= 4 and isinstance(input_shape[3], int)
+        else 640
+    )
 
     padded_img, ratio, pad_w, pad_h = letterbox_yolo(img, input_w, input_h)
-    blob = cv2.dnn.blobFromImage(padded_img, 1.0 / 255.0, (input_w, input_h), (0, 0, 0), swapRB=True, crop=False)
+    blob = cv2.dnn.blobFromImage(
+        padded_img, 1.0 / 255.0, (input_w, input_h), (0, 0, 0), swapRB=True, crop=False
+    )
 
     outputs = session.run(output_names, {input_names[0]: blob})
     out_data = outputs[0]
@@ -23,7 +36,9 @@ def infer_yolo(session, input_names, output_names, img, conf_thresh=0.5, allowed
     scores_list = []
     class_ids_list = []
 
-    is_end2end_nms = (len(shape) == 3 and shape[2] in [6, 7] and shape[1] < 2000) or (len(shape) == 2 and shape[1] in [6, 7])
+    is_end2end_nms = (len(shape) == 3 and shape[2] in [6, 7] and shape[1] < 2000) or (
+        len(shape) == 2 and shape[1] in [6, 7]
+    )
 
     if is_end2end_nms:
         data_matrix = out_data[0] if len(shape) == 3 else out_data
@@ -45,7 +60,7 @@ def infer_yolo(session, input_names, output_names, img, conf_thresh=0.5, allowed
                 valid_mask = conf_mask
 
             valid_matrix = data_matrix[valid_mask]
-            
+
             if len(valid_matrix) > 0:
                 x1_raw = valid_matrix[:, offset + 0]
                 y1_raw = valid_matrix[:, offset + 1]
@@ -64,7 +79,7 @@ def infer_yolo(session, input_names, output_names, img, conf_thresh=0.5, allowed
     else:
         data_matrix = out_data[0]
         if data_matrix.shape[0] < data_matrix.shape[1]:
-            data_matrix = data_matrix.T  
+            data_matrix = data_matrix.T
 
         boxes_data = data_matrix[:, 0:4]
         scores_data = data_matrix[:, 4:]
@@ -101,7 +116,7 @@ def infer_yolo(session, input_names, output_names, img, conf_thresh=0.5, allowed
 
     indices = cv2.dnn.NMSBoxes(boxes_list, scores_list, conf_thresh, 0.5)
     final_dets = []
-    
+
     if len(indices) > 0:
         for idx in indices.flatten():
             x, y, w, h = boxes_list[idx]
@@ -110,9 +125,16 @@ def infer_yolo(session, input_names, output_names, img, conf_thresh=0.5, allowed
             safe_w = min(img.shape[1] - safe_x, w)
             safe_h = min(img.shape[0] - safe_y, h)
             if safe_w > 0 and safe_h > 0:
-                final_dets.append(Detection([safe_x, safe_y, safe_w, safe_h], scores_list[idx], class_ids_list[idx]))
+                final_dets.append(
+                    Detection(
+                        [safe_x, safe_y, safe_w, safe_h],
+                        scores_list[idx],
+                        class_ids_list[idx],
+                    )
+                )
 
     return final_dets
+
 
 def decode_parseq(logits_data, seq_len, num_classes):
     result = ""
@@ -140,5 +162,5 @@ def decode_parseq(logits_data, seq_len, num_classes):
     min_conf = min(confidences)
 
     out_confidence = (avg_conf * 0.4) + (min_conf * 0.6)
-    
+
     return result, out_confidence

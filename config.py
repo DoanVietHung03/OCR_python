@@ -6,12 +6,14 @@ TARGET_VEHICLES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 WEIGHT_PLATE = 0.15
 WEIGHT_OCR = 0.85
 
+
 class OCRResult:
     def __init__(self, text, confidence, update_count):
         self.text = text
         self.confidence = confidence
         self.update_count = update_count
         self.is_logged = False
+
 
 class Detection:
     def __init__(self, box, score, class_id):

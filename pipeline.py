@@ -203,9 +203,9 @@ def process_single_frame(img_bgr,
                 
                 holistic_score = (req['plate_conf']   * WEIGHT_PLATE   + ocr_conf            * WEIGHT_OCR)                             
                 if len(current_text) < 6: holistic_score *= 0.50
+                # Nếu text giống frame trước, thưởng thêm điểm để tăng độ ổn định (tối đa +0.05)
                 if current_text == ocr_cache[track_id].text:
-                    # Nếu text giống frame trước, thưởng thêm 5% điểm tin cậy cho mỗi lần lặp (tối đa không quá 1.0)
-                    bonus = min(0.15, ocr_cache[track_id].update_count * 0.05)
+                    bonus = min(0.05, ocr_cache[track_id].update_count * 0.02)
                     holistic_score = min(1.0, holistic_score + bonus)
             elif req['type'] == 'double':
                 l_top = batched_logits[req['idx_top']]
@@ -222,8 +222,8 @@ def process_single_frame(img_bgr,
                     holistic_score *= 0.70
 
                 if current_text == ocr_cache[track_id].text:
-                    # Nếu text giống frame trước, thưởng thêm 5% điểm tin cậy cho mỗi lần lặp (tối đa không quá 1.0)
-                    bonus = min(0.15, ocr_cache[track_id].update_count * 0.05)
+                    # Nếu text giống frame trước, thưởng thêm điểm để tăng độ ổn định (tối đa +0.05)
+                    bonus = min(0.05, ocr_cache[track_id].update_count * 0.02)
                     holistic_score = min(1.0, holistic_score + bonus)
                     
             # Cập nhật cache nếu điểm cao hơn

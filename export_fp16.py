@@ -1,35 +1,29 @@
 import onnx
-from onnxconverter_common import float16
-import os
 
-def convert_to_fp16(input_path, output_path):
-    print(f"⏳ Đang xử lý: {input_path}...")
-    try:
-        # 1. Tải model FP32 gốc
-        model_fp32 = onnx.load(input_path)
-        
-        # 2. Ép kiểu toàn bộ weights/nodes sang FP16
-        model_fp16 = float16.convert_float_to_float16(
-            model_fp32, 
-            op_block_list=['Resize', 'Cast'],
-            disable_shape_infer=True
-        )
-        
-        # 3. Lưu file mới
-        onnx.save(model_fp16, output_path)
-        print(f"✅ Xong! Đã lưu bản tối ưu tại: {output_path}\n")
-    except Exception as e:
-        print(f"❌ Lỗi khi chuyển đổi {input_path}: {e}\n")
+def make_dynamic_batch(input_path, output_path):
+    print(f"Đang tải model từ: {input_path}")
+    model = onnx.load(input_path)
+
+    # 1. Đổi input batch size thành dạng chuỗi (dynamic)
+    for input_node in model.graph.input:
+        dim = input_node.type.tensor_type.shape.dim
+        if len(dim) > 0:
+            # Gán dim[0] (thường là batch_size) thành một chuỗi đại diện cho dynamic
+            dim[0].dim_param = 'dynamic_batch'
+
+    # 2. Đổi output batch size thành dạng chuỗi (dynamic)
+    for output_node in model.graph.output:
+        dim = output_node.type.tensor_type.shape.dim
+        if len(dim) > 0:
+            dim[0].dim_param = 'dynamic_batch'
+
+    # Lưu lại file mới
+    onnx.save(model, output_path)
+    print(f"Đã lưu thành công model Dynamic Batch tại: {output_path}")
 
 if __name__ == "__main__":
-    # Danh sách các model hiện tại trong thư mục weights của bạn
-    models_to_convert = [
-        ("weights/yolov9_detect_plate.onnx", "weights/yolov9_detect_plate_fp16.onnx"),
-        ("weights/parseq.onnx", "weights/parseq_fp16.onnx")
-    ]
+    # Điền đường dẫn file cũ và file mới vào đây
+    old_model = "weights/yolov9_detect_plate.onnx"
+    new_model = "weights/yolov9_detect_plate_dynamic.onnx"
     
-    for in_path, out_path in models_to_convert:
-        if os.path.exists(in_path):
-            convert_to_fp16(in_path, out_path)
-        else:
-            print(f"⚠️ Không tìm thấy file: {in_path}. Vui lòng kiểm tra lại đường dẫn.")
+    make_dynamic_batch(old_model, new_model)

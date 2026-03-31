@@ -57,7 +57,7 @@ def load_models():
             "CUDAExecutionProvider",
             {
                 "device_id": 0,
-                "cudnn_conv_algo_search": "EXHAUSTIVE",
+                "cudnn_conv_algo_search": "HEURISTIC",
                 "cudnn_conv_use_max_workspace": "1",
                 "arena_extend_strategy": "kNextPowerOfTwo",
             },

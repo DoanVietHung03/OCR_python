@@ -12,3 +12,4 @@ __pycache__/
 *.tar.gz
 weights/
 streaming/
+video_results/

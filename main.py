@@ -67,9 +67,9 @@ def load_models():
     return (
         ort.InferenceSession("weights/yolo11s.onnx", sess_options, providers=providers),
         ort.InferenceSession(
-            "weights/yolov9_detect_plate_fp16.onnx", sess_options, providers=providers
+            "weights/yolov9_detect_plate.onnx", sess_options, providers=providers
         ),
-        ort.InferenceSession("weights/parseq_fp16.onnx", sess_options, providers=providers),
+        ort.InferenceSession("weights/parseq.onnx", sess_options, providers=providers),
     )
 
 

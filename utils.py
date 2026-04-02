@@ -1,12 +1,34 @@
 import cv2
 import numpy as np
 
+DICT_NUM_TO_CHAR = {'0': 'D', '1': 'I', '2': 'Z', '5': 'S', '8': 'B'}
+DICT_CHAR_TO_NUM = {'O': '0', 'Q': '0', 'D': '0', 'I': '1', 'L': '1', 'Z': '2', 'B': '8', 'S': '5', 'G': '6'}
 
 def clean_plate_text(input_str):
-    return "".join([c.upper() for c in input_str if c.isalnum()])
+    """Xử lý biển 1 dòng (Ô tô / Rơ moóc): Tổng hợp format của cả 2 dòng trên"""
+    raw = "".join([c for c in input_str.upper() if c.isalnum()])
+    if len(raw) < 6: 
+        return raw
+    
+    # Phân tách: 2 ký tự đầu (số) + 1 ký tự (chữ) + 1 ký tự (số/chữ) + phần còn lại (số)
+    p1 = "".join([DICT_CHAR_TO_NUM.get(c, c) for c in raw[:2]])
+    p2 = DICT_NUM_TO_CHAR.get(raw[2], raw[2])
+    p3 = raw[3] # Ký tự thứ 4 linh động
+    
+    # Ép phần đuôi (4 hoặc 5 ký tự cuối) thành số
+    p4_raw = raw[4:]
+    p4 = "".join([DICT_CHAR_TO_NUM.get(c, c) for c in p4_raw])
+    
+    head = p1 + "-" + p2 + p3
+    tail = p4
+    if len(tail) >= 5:
+        tail = f"{tail[:3]}.{tail[3:5]}"
+        
+    return f"{head} {tail}".strip()
 
 
 def clean_bottom_line(input_str):
+    corrected = "".join([DICT_CHAR_TO_NUM.get(c, c) for c in input_str.upper()])
     output = "".join([c for c in input_str if c.isdigit()])
     if len(output) >= 5:  # Biển 5 số (có thể có nhiễu dư phía sau)
         return f"{output[:3]}.{output[3:5]}"
@@ -16,7 +38,14 @@ def clean_bottom_line(input_str):
 
 
 def clean_top_line(input_str):
-    output = clean_plate_text(input_str)[:4]
+    raw = "".join([c for c in input_str.upper() if c.isalnum()])
+    if len(raw) < 3: 
+        return raw
+    part1 = "".join([DICT_CHAR_TO_NUM.get(c, c) for c in raw[:2]])
+    part2 = DICT_NUM_TO_CHAR.get(raw[2], raw[2])
+    part3 = raw[3:]
+    output = part1 + part2 + part3
+    output = output[:4]
     if len(output) >= 3:
         return f"{output[:2]}-{output[2:]}"
     return output
@@ -88,3 +117,45 @@ def letterbox_yolo(source, expected_width, expected_height):
     padded = np.full((expected_height, expected_width, 3), 114, dtype=np.uint8)
     padded[pad_h : pad_h + new_unpad_h, pad_w : pad_w + new_unpad_w] = resized
     return padded, ratio, pad_w, pad_h
+
+def is_ir_image(img, saturation_thresh=15):
+    """
+    Phát hiện ảnh hồng ngoại dựa vào kênh Saturation.
+    """
+    if img is None or img.size == 0:
+        return False
+    # Chuyển sang không gian màu HSV
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    s_channel = hsv[:, :, 1]
+    
+    # Tính trung bình độ bão hòa màu
+    mean_s = np.mean(s_channel)
+    
+    # Nếu trung bình S nhỏ hơn ngưỡng (ví dụ 15), đó là ảnh hồng ngoại
+    return mean_s < saturation_thresh
+
+
+def apply_ir_handling(img_plate):
+    """
+    Đảo ngược cực (Invert) nếu biển số IR bị lóa phản quang.
+    """
+    if not is_ir_image(img_plate):
+        return img_plate  # Nếu là ảnh ban ngày có màu, giữ nguyên
+
+    # Chuyển sang ảnh xám để phân tích độ sáng
+    gray = cv2.cvtColor(img_plate, cv2.COLOR_BGR2GRAY)
+    
+    # Trích xuất vùng trung tâm của biển số (bỏ qua viền)
+    h, w = gray.shape
+    margin_y, margin_x = int(h * 0.25), int(w * 0.25)
+    center_roi = gray[margin_y:h-margin_y, margin_x:w-margin_x]
+    
+    if center_roi.size > 0:
+        mean_center_brightness = np.mean(center_roi)
+        # Biển số phản quang ban đêm thường có chữ lóa rất sáng
+        # Nếu trung tâm quá sáng (> 140), khả năng cao chữ đang trắng trên nền đen
+        if mean_center_brightness > 140:
+            # Lật ngược pixel (chữ trắng -> đen, nền đen -> trắng)
+            img_plate = cv2.bitwise_not(img_plate)
+            
+    return img_plate

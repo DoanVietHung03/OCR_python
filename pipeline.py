@@ -17,6 +17,7 @@ from utils import (
     clean_plate_text,
     clean_top_line,
     clean_bottom_line,
+    apply_ir_handling,
 )
 from inference import infer_yolo, decode_parseq
 
@@ -215,7 +216,8 @@ def process_single_frame(
                                 ratio = img_plate.shape[1] / (img_plate.shape[0] + 1e-6)
 
                                 if ratio > 2.2:
-                                    blob = preprocess_and_normalize_ocr(img_plate)
+                                    img_plate_ready = apply_ir_handling(img_plate)
+                                    blob = preprocess_and_normalize_ocr(img_plate_ready)
                                     parseq_blobs.append(blob)
                                     ocr_requests.append(
                                         {
@@ -229,9 +231,10 @@ def process_single_frame(
                                         }
                                     )
                                 else:
-                                    h_p, w_p = img_plate.shape[:2]
-                                    img_top = img_plate[0 : int(h_p * 0.60), :]
-                                    img_bot = img_plate[int(h_p * 0.40) :, :]
+                                    img_plate_ready = apply_ir_handling(img_plate)
+                                    h_p, w_p = img_plate_ready.shape[:2]
+                                    img_top = img_plate_ready[0 : int(h_p * 0.60), :]
+                                    img_bot = img_plate_ready[int(h_p * 0.40) :, :]
                                     b_top = preprocess_and_normalize_ocr(img_top)
                                     b_bot = preprocess_and_normalize_ocr(img_bot)
 
@@ -272,6 +275,12 @@ def process_single_frame(
                 holistic_score = (
                     req["plate_conf"] * WEIGHT_PLATE + ocr_conf * WEIGHT_OCR
                 )
+                
+                if not re.match(r"^\d{2}-[A-Z][A-Z0-9]? (\d{4}|\d{3}\.\d{2})$", current_text):
+                    holistic_score *= 0.70  # Phạt 30% nếu sai format (giữ nguyên logic soft-validation)
+                elif len(current_text) < 6:
+                    holistic_score *= 0.50  # Phạt nặng nếu quá ngắn
+                    
                 if len(current_text) < 6:
                     holistic_score *= 0.50
                 # Nếu text giống frame trước, thưởng thêm điểm để tăng độ ổn định (tối đa +0.05)
@@ -293,7 +302,7 @@ def process_single_frame(
                 holistic_score = (
                     req["plate_conf"] * WEIGHT_PLATE + ocr_conf * WEIGHT_OCR
                 )
-                if not re.match(r"^\d{2}-[A-Z][A-Z0-9] \d{3}\.\d{2}$", current_text):
+                if not re.match(r"^\d{2}-[A-Z][A-Z0-9]? (\d{4}|\d{3}\.\d{2})$", current_text):
                     holistic_score *= 0.70
 
                 if current_text == ocr_cache[track_id].text:

@@ -6,7 +6,7 @@ thành cấu trúc thư mục test_data/ dùng được với benchmark_alpr.py
 
 Dataset Roboflow OCR thường có label dạng:
   0 0.512 0.431 0.231 0.089   ← class=0 là "character", không có text
-  
+
 → Cần bổ sung plate_text từ tên file hoặc annotation khác.
 
 Script này cũng tự crop biển số từ ảnh gốc ra thư mục crops/
@@ -21,9 +21,9 @@ from pathlib import Path
 
 
 def prepare_from_roboflow_yolo(
-    src_dir: str,           # thư mục chứa images/ và labels/ gốc
+    src_dir: str,  # thư mục chứa images/ và labels/ gốc
     dst_dir: str = "test_data",
-    split:   str = "test",  # "train", "valid", "test"
+    split: str = "test",  # "train", "valid", "test"
 ):
     """
     Cấu trúc Roboflow:
@@ -67,11 +67,11 @@ def prepare_from_roboflow_yolo(
             for i, line in enumerate(lines):
                 parts = line.strip().split()
                 cx, cy, w, h = map(float, parts[1:5])
-                plate_text   = parts[5]
-                x1 = int((cx - w/2) * W)
-                y1 = int((cy - h/2) * H)
-                x2 = int((cx + w/2) * W)
-                y2 = int((cy + h/2) * H)
+                plate_text = parts[5]
+                x1 = int((cx - w / 2) * W)
+                y1 = int((cy - h / 2) * H)
+                x2 = int((cx + w / 2) * W)
+                y2 = int((cy + h / 2) * H)
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(W, x2), min(H, y2)
                 crop = img[y1:y2, x1:x2]
@@ -97,18 +97,20 @@ def prepare_from_roboflow_yolo(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--src",   required=True, help="Thư mục Roboflow dataset gốc")
-    parser.add_argument("--dst",   default="test_data", help="Thư mục output")
+    parser.add_argument("--src", required=True, help="Thư mục Roboflow dataset gốc")
+    parser.add_argument("--dst", default="test_data", help="Thư mục output")
     parser.add_argument("--split", default="test", choices=["train", "valid", "test"])
     args = parser.parse_args()
 
     prepare_from_roboflow_yolo(args.src, args.dst, args.split)
 
-    print("""
+    print(
+        """
 Chạy benchmark:
   # OCR only (nếu chỉ test PARSeq):
   python example_run.py --mode ocr --crops test_data/crops/
 
   # Full pipeline:
   python example_run.py --mode full --data test_data/
-""")
+"""
+    )

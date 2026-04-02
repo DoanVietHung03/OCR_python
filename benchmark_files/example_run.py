@@ -40,6 +40,7 @@ from benchmark_alpr import (
 # BƯỚC 2: Định nghĩa OCR function (dùng cho OCR-only benchmark)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def parseq_ocr(img: np.ndarray) -> str:
     """
     Nhận vào ảnh biển (BGR numpy array),
@@ -67,12 +68,14 @@ def parseq_ocr(img: np.ndarray) -> str:
 # BƯỚC 3: Định nghĩa full pipeline function
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def full_pipeline(img: np.ndarray) -> PipelineResult:
     """
     Nhận ảnh gốc (nhiều xe), trả về PipelineResult
     với tất cả biển số detect được.
     """
     import time
+
     t0 = time.perf_counter()
 
     pred_boxes, pred_scores, pred_texts = [], [], []
@@ -105,10 +108,10 @@ def full_pipeline(img: np.ndarray) -> PipelineResult:
     latency_ms = (time.perf_counter() - t0) * 1000
 
     return PipelineResult(
-        pred_boxes  = pred_boxes,
-        pred_scores = pred_scores,
-        pred_texts  = pred_texts,
-        latency_ms  = latency_ms,
+        pred_boxes=pred_boxes,
+        pred_scores=pred_scores,
+        pred_texts=pred_texts,
+        latency_ms=latency_ms,
     )
 
 
@@ -118,33 +121,46 @@ def full_pipeline(img: np.ndarray) -> PipelineResult:
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="ALPR Benchmark Runner")
-    parser.add_argument("--mode",       choices=["ocr", "full"], default="ocr",
-                        help="ocr = chỉ test PARSeq trên crops; full = full pipeline")
-    parser.add_argument("--data",       default="test_data/",
-                        help="Thư mục test set (images/ + labels/)")
-    parser.add_argument("--crops",      default="test_data/crops/",
-                        help="Thư mục crops (dùng cho --mode ocr)")
-    parser.add_argument("--output",     default="benchmark_results.json")
-    parser.add_argument("--two-row",    action="store_true", default=True,
-                        help="Tự động ghép biển 2 dòng → 1 dòng trước OCR")
+    parser.add_argument(
+        "--mode",
+        choices=["ocr", "full"],
+        default="ocr",
+        help="ocr = chỉ test PARSeq trên crops; full = full pipeline",
+    )
+    parser.add_argument(
+        "--data", default="test_data/", help="Thư mục test set (images/ + labels/)"
+    )
+    parser.add_argument(
+        "--crops",
+        default="test_data/crops/",
+        help="Thư mục crops (dùng cho --mode ocr)",
+    )
+    parser.add_argument("--output", default="benchmark_results.json")
+    parser.add_argument(
+        "--two-row",
+        action="store_true",
+        default=True,
+        help="Tự động ghép biển 2 dòng → 1 dòng trước OCR",
+    )
     args = parser.parse_args()
 
     bench = ALPRBenchmark(
-        pipeline_fn  = full_pipeline,
-        two_row_split = args.two_row,
+        pipeline_fn=full_pipeline,
+        two_row_split=args.two_row,
     )
 
     if args.mode == "ocr":
         print("\n[Mode] OCR-only benchmark (PARSeq trên ảnh biển đã crop)")
-        crops  = load_ocr_crops(args.crops)
+        crops = load_ocr_crops(args.crops)
         result = bench.run_ocr_only(parseq_ocr, crops)
         print_results(result, "OCR Benchmark — PARSeq (Vietnamese LP)")
 
     else:
         print("\n[Mode] Full pipeline benchmark")
         samples = load_test_dataset(args.data)
-        result  = bench.run_full(samples)
+        result = bench.run_full(samples)
         print_results(result, "Full Pipeline Benchmark")
 
     save_results(result, args.output)

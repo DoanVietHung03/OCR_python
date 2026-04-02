@@ -39,6 +39,7 @@ import cv2
 import torch
 from tqdm import tqdm
 
+
 # ─── Levenshtein / edit distance ────────────────────────────────────────────
 def edit_distance(s1: str, s2: str) -> int:
     """Tính Levenshtein distance giữa 2 chuỗi."""
@@ -91,9 +92,9 @@ def compute_ap(recalls: np.ndarray, precisions: np.ndarray) -> float:
 
 
 def compute_map(
-    all_preds: List[Dict],   # [{"boxes": [[x1,y1,x2,y2,...]], "scores": [...]}]
-    all_gts:   List[Dict],   # [{"boxes": [[x1,y1,x2,y2],...]}]
-    iou_thresholds: List[float] = None
+    all_preds: List[Dict],  # [{"boxes": [[x1,y1,x2,y2,...]], "scores": [...]}]
+    all_gts: List[Dict],  # [{"boxes": [[x1,y1,x2,y2],...]}]
+    iou_thresholds: List[float] = None,
 ) -> Dict[str, float]:
     """
     Tính mAP@0.5 và mAP@0.5:0.95.
@@ -107,8 +108,8 @@ def compute_map(
         n_gt_total = 0
 
         for preds, gts in zip(all_preds, all_gts):
-            gt_boxes  = gts.get("boxes", [])
-            pred_boxes  = preds.get("boxes", [])
+            gt_boxes = gts.get("boxes", [])
+            pred_boxes = preds.get("boxes", [])
             pred_scores = preds.get("scores", [])
             n_gt_total += len(gt_boxes)
 
@@ -124,10 +125,12 @@ def compute_map(
                     if v > best_iou:
                         best_iou, best_j = v, j
                 if best_iou >= iou_thresh and not matched[best_j]:
-                    tp_list.append(1); fp_list.append(0)
+                    tp_list.append(1)
+                    fp_list.append(0)
                     matched[best_j] = True
                 else:
-                    tp_list.append(0); fp_list.append(1)
+                    tp_list.append(0)
+                    fp_list.append(1)
                 scores_list.append(sc)
 
         if not scores_list:
@@ -139,13 +142,12 @@ def compute_map(
         fp_arr = np.array(fp_list)[order]
         tp_cum = np.cumsum(tp_arr)
         fp_cum = np.cumsum(fp_arr)
-        recalls    = tp_cum / (n_gt_total + 1e-8)
+        recalls = tp_cum / (n_gt_total + 1e-8)
         precisions = tp_cum / (tp_cum + fp_cum + 1e-8)
         aps[iou_thresh] = compute_ap(recalls, precisions)
 
-    map50    = aps.get(0.5, 0.0)
-    map50_95 = np.mean([aps.get(t, 0.0)
-                        for t in np.arange(0.5, 1.0, 0.05)])
+    map50 = aps.get(0.5, 0.0)
+    map50_95 = np.mean([aps.get(t, 0.0) for t in np.arange(0.5, 1.0, 0.05)])
     return {"mAP@0.5": map50, "mAP@0.5:0.95": map50_95}
 
 
@@ -153,16 +155,16 @@ def compute_map(
 @dataclass
 class Sample:
     image_path: str
-    gt_boxes:   List[List[float]]   # [[x1,y1,x2,y2], ...]  pixel coords
-    gt_texts:   List[str]           # ["51G12345", ...]  một GT per box
+    gt_boxes: List[List[float]]  # [[x1,y1,x2,y2], ...]  pixel coords
+    gt_texts: List[str]  # ["51G12345", ...]  một GT per box
 
 
 @dataclass
 class PipelineResult:
-    pred_boxes:  List[List[float]]
+    pred_boxes: List[List[float]]
     pred_scores: List[float]
-    pred_texts:  List[str]
-    latency_ms:  float   # toàn bộ pipeline từ đầu vào đến kết quả cuối
+    pred_texts: List[str]
+    latency_ms: float  # toàn bộ pipeline từ đầu vào đến kết quả cuối
 
 
 # ─── Dataset loader ──────────────────────────────────────────────────────────
@@ -236,18 +238,18 @@ class ALPRBenchmark:
                      trả về PipelineResult
         two_row_split: nếu True, tự động cắt đôi biển 2 dòng trước khi OCR
         """
-        self.pipeline_fn   = pipeline_fn
+        self.pipeline_fn = pipeline_fn
         self.two_row_split = two_row_split
 
     # ── Full-pipeline benchmark ──────────────────────────────────────────────
     def run_full(self, samples: List[Sample]) -> Dict:
         all_preds_det = []
-        all_gts_det   = []
-        ocr_cer_list  = []
+        all_gts_det = []
+        ocr_cer_list = []
         plate_correct = 0
-        e2e_correct   = 0
-        total_plates  = 0
-        latencies     = []
+        e2e_correct = 0
+        total_plates = 0
+        latencies = []
 
         for sample in tqdm(samples, desc="Benchmarking"):
             img = cv2.imread(sample.image_path)
@@ -260,10 +262,12 @@ class ALPRBenchmark:
             latencies.append((t1 - t0) * 1000)
 
             # Detection metrics
-            all_preds_det.append({
-                "boxes":  result.pred_boxes,
-                "scores": result.pred_scores,
-            })
+            all_preds_det.append(
+                {
+                    "boxes": result.pred_boxes,
+                    "scores": result.pred_scores,
+                }
+            )
             all_gts_det.append({"boxes": sample.gt_boxes})
 
             # Match predicted plates → GT (greedy by IoU)
@@ -277,14 +281,14 @@ class ALPRBenchmark:
 
                 if best_iou_val >= 0.5 and best_j >= 0 and not matched_gt[best_j]:
                     matched_gt[best_j] = True
-                    gt_text   = sample.gt_texts[best_j]
+                    gt_text = sample.gt_texts[best_j]
                     pred_text = pt.upper().replace("-", "").replace(".", "")
-                    cer_val   = compute_cer(pred_text, gt_text)
+                    cer_val = compute_cer(pred_text, gt_text)
                     ocr_cer_list.append(cer_val)
                     plate_correct += int(pred_text == gt_text)
                     # End-to-End: phải detect đúng VÀ đọc đúng
-                    e2e_correct   += int(best_iou_val >= 0.5 and pred_text == gt_text)
-                    total_plates  += 1
+                    e2e_correct += int(best_iou_val >= 0.5 and pred_text == gt_text)
+                    total_plates += 1
 
             # Các GT plate không được match coi như sai hoàn toàn
             for j, matched in enumerate(matched_gt):
@@ -293,28 +297,31 @@ class ALPRBenchmark:
                     total_plates += 1
 
         map_scores = compute_map(
-            all_preds_det, all_gts_det,
-            iou_thresholds=list(np.arange(0.5, 1.0, 0.05))
+            all_preds_det, all_gts_det, iou_thresholds=list(np.arange(0.5, 1.0, 0.05))
         )
-        avg_cer  = float(np.mean(ocr_cer_list)) if ocr_cer_list else 1.0
-        avg_lat  = float(np.mean(latencies))
-        fps      = 1000.0 / avg_lat if avg_lat > 0 else 0.0
+        avg_cer = float(np.mean(ocr_cer_list)) if ocr_cer_list else 1.0
+        avg_lat = float(np.mean(latencies))
+        fps = 1000.0 / avg_lat if avg_lat > 0 else 0.0
         throughput = fps  # plates/sec ≈ FPS nếu trung bình 1 biển/ảnh
 
         return {
-            "Detection mAP@0.5":      round(map_scores["mAP@0.5"] * 100, 2),
+            "Detection mAP@0.5": round(map_scores["mAP@0.5"] * 100, 2),
             "Detection mAP@0.5:0.95": round(map_scores["mAP@0.5:0.95"] * 100, 2),
-            "CER (%)":                round(avg_cer * 100, 2),
+            "CER (%)": round(avg_cer * 100, 2),
             "CA — Char Accuracy (%)": round((1 - avg_cer) * 100, 2),
-            "PA — Plate Accuracy (%)": round(plate_correct / total_plates * 100, 2)
-                                        if total_plates > 0 else 0.0,
-            "End-to-End Accuracy (%)": round(e2e_correct / total_plates * 100, 2)
-                                        if total_plates > 0 else 0.0,
-            "Avg Latency (ms)":       round(avg_lat, 1),
-            "FPS":                    round(fps, 1),
-            "Throughput (plates/s)":  round(throughput, 1),
-            "Total samples":          len(samples),
-            "Total plates":           total_plates,
+            "PA — Plate Accuracy (%)": (
+                round(plate_correct / total_plates * 100, 2)
+                if total_plates > 0
+                else 0.0
+            ),
+            "End-to-End Accuracy (%)": (
+                round(e2e_correct / total_plates * 100, 2) if total_plates > 0 else 0.0
+            ),
+            "Avg Latency (ms)": round(avg_lat, 1),
+            "FPS": round(fps, 1),
+            "Throughput (plates/s)": round(throughput, 1),
+            "Total samples": len(samples),
+            "Total plates": total_plates,
         }
 
     # ── OCR-only benchmark (input = cropped plates) ──────────────────────────
@@ -323,9 +330,9 @@ class ALPRBenchmark:
         ocr_fn: callable nhận ảnh crop (np.ndarray) → str (predicted text)
         crops:  [(image_path, gt_text), ...]
         """
-        cer_list       = []
-        plate_correct  = 0
-        latencies      = []
+        cer_list = []
+        plate_correct = 0
+        latencies = []
 
         for img_path, gt_text in tqdm(crops, desc="OCR Benchmark"):
             img = cv2.imread(img_path)
@@ -350,12 +357,16 @@ class ALPRBenchmark:
         avg_lat = float(np.mean(latencies)) if latencies else 0.0
 
         return {
-            "CER (%)":                round(avg_cer * 100, 2),
+            "CER (%)": round(avg_cer * 100, 2),
             "CA — Char Accuracy (%)": round((1 - avg_cer) * 100, 2),
-            "PA — Plate Accuracy (%)": round(plate_correct / n * 100, 2) if n > 0 else 0.0,
-            "Avg OCR Latency (ms)":   round(avg_lat, 1),
-            "OCR Throughput (plates/s)": round(1000 / avg_lat, 1) if avg_lat > 0 else 0.0,
-            "Total crops evaluated":  n,
+            "PA — Plate Accuracy (%)": (
+                round(plate_correct / n * 100, 2) if n > 0 else 0.0
+            ),
+            "Avg OCR Latency (ms)": round(avg_lat, 1),
+            "OCR Throughput (plates/s)": (
+                round(1000 / avg_lat, 1) if avg_lat > 0 else 0.0
+            ),
+            "Total crops evaluated": n,
         }
 
     @staticmethod
@@ -365,8 +376,8 @@ class ALPRBenchmark:
         để PARSeq đọc liên tục.
         """
         h, w = img.shape[:2]
-        top    = img[:h // 2, :]
-        bottom = img[h // 2:, :]
+        top = img[: h // 2, :]
+        bottom = img[h // 2 :, :]
         # Resize bottom về cùng chiều cao với top
         bottom = cv2.resize(bottom, (top.shape[1], top.shape[0]))
         return np.concatenate([top, bottom], axis=1)

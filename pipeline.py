@@ -6,8 +6,8 @@ import csv
 import time
 from datetime import datetime
 import re
-import threading  
-import queue 
+import threading
+import queue
 
 from config import OCRResult, WEIGHT_PLATE, WEIGHT_OCR
 from utils import (
@@ -275,12 +275,14 @@ def process_single_frame(
                 holistic_score = (
                     req["plate_conf"] * WEIGHT_PLATE + ocr_conf * WEIGHT_OCR
                 )
-                
-                if not re.match(r"^\d{2}-[A-Z][A-Z0-9]? (\d{4}|\d{3}\.\d{2})$", current_text):
+
+                if not re.match(
+                    r"^\d{2}-[A-Z][A-Z0-9]? (\d{4}|\d{3}\.\d{2})$", current_text
+                ):
                     holistic_score *= 0.70  # Phạt 30% nếu sai format (giữ nguyên logic soft-validation)
                 elif len(current_text) < 6:
                     holistic_score *= 0.50  # Phạt nặng nếu quá ngắn
-                    
+
                 if len(current_text) < 6:
                     holistic_score *= 0.50
                 # Nếu text giống frame trước, thưởng thêm điểm để tăng độ ổn định (tối đa +0.05)
@@ -302,7 +304,9 @@ def process_single_frame(
                 holistic_score = (
                     req["plate_conf"] * WEIGHT_PLATE + ocr_conf * WEIGHT_OCR
                 )
-                if not re.match(r"^\d{2}-[A-Z][A-Z0-9]? (\d{4}|\d{3}\.\d{2})$", current_text):
+                if not re.match(
+                    r"^\d{2}-[A-Z][A-Z0-9]? (\d{4}|\d{3}\.\d{2})$", current_text
+                ):
                     holistic_score *= 0.70
 
                 if current_text == ocr_cache[track_id].text:
@@ -312,9 +316,7 @@ def process_single_frame(
 
             blur = req["blur_score"]
             if blur < 80:
-                holistic_score *= (
-                    0.80  # Mờ nặng -> Ép giảm 20% tổng điểm
-                )
+                holistic_score *= 0.80  # Mờ nặng -> Ép giảm 20% tổng điểm
             elif blur < 200:
                 holistic_score *= 0.88  # Hơi nhòe -> Ép giảm 12%
             elif blur < 400:
